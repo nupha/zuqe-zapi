@@ -62,8 +62,9 @@ pub enum ZqType {
     Symbol = 5,
     Function = 6,
     Object = 7,
+    BigInt = 8,
     /// The exception sentinel (`value_exception`); not a normal JS value.
-    Exception = 8,
+    Exception = 9,
 }
 
 impl ZqType {
@@ -78,6 +79,7 @@ impl ZqType {
             Self::Symbol => "symbol",
             Self::Function => "function",
             Self::Object => "object",
+            Self::BigInt => "bigint",
             Self::Exception => "exception",
         }
     }
