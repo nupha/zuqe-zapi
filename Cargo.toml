@@ -1,0 +1,7 @@
+[package]
+name = "zuqe_zapi"
+version = "0.1.0"
+edition = "2024"
+description = "Zuqe native extension ABI contract crate"
+repository = "https://github.com/nupha/zuqe-zapi"
+license = "Apache-2.0"

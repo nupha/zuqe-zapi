@@ -1,0 +1,137 @@
+use crate::{ffi::ZqRawValue, ZqCtx, ZqError, ZqValue};
+
+/// 从 JS 值解包为 Rust 类型。
+///
+/// 用于 `#[zq_function]` 参数解包。失败时应调用 `throw_type_error` 并返回 `Err`。
+pub trait FromZqValue<'cx>: Sized {
+    fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError>;
+}
+
+/// 将 Rust 类型转换为 JS 值。
+///
+/// 用于 `#[zq_function]` 返回值转换。
+pub trait IntoZqValue<'cx> {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx>;
+}
+
+// ── FromZqValue impls ──
+
+impl<'cx> FromZqValue<'cx> for ZqValue<'cx> {
+    fn from_zq_value(_cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        Ok(val)
+    }
+}
+
+impl<'cx> FromZqValue<'cx> for ZqRawValue {
+    fn from_zq_value(_cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        Ok(val.raw())
+    }
+}
+
+impl<'cx> FromZqValue<'cx> for i32 {
+    fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        Ok(cx.number_value(val) as i32)
+    }
+}
+
+impl<'cx> FromZqValue<'cx> for i64 {
+    fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        Ok(cx.number_value(val) as i64)
+    }
+}
+
+impl<'cx> FromZqValue<'cx> for f64 {
+    fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        Ok(cx.number_value(val))
+    }
+}
+
+impl<'cx> FromZqValue<'cx> for bool {
+    fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        Ok(cx.bool_value(val))
+    }
+}
+
+impl<'cx> FromZqValue<'cx> for String {
+    fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        val.as_string(cx)
+    }
+}
+
+impl<'cx, T: FromZqValue<'cx>> FromZqValue<'cx> for Option<T> {
+    fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
+        if val.is_undefined() || val.is_null() {
+            Ok(None)
+        } else {
+            T::from_zq_value(cx, val).map(Some)
+        }
+    }
+}
+
+// ── IntoZqValue impls ──
+
+impl<'cx> IntoZqValue<'cx> for ZqValue<'cx> {
+    fn into_zq_value(self, _cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        self
+    }
+}
+
+impl<'cx> IntoZqValue<'cx> for ZqRawValue {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        unsafe { ZqValue::from_raw(cx, self) }
+    }
+}
+
+impl<'cx> IntoZqValue<'cx> for i32 {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        cx.number(self as f64)
+    }
+}
+
+impl<'cx> IntoZqValue<'cx> for i64 {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        cx.number(self as f64)
+    }
+}
+
+impl<'cx> IntoZqValue<'cx> for f64 {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        cx.number(self)
+    }
+}
+
+impl<'cx> IntoZqValue<'cx> for bool {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        cx.bool(self)
+    }
+}
+
+impl<'cx> IntoZqValue<'cx> for &str {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        cx.string(self)
+    }
+}
+
+impl<'cx> IntoZqValue<'cx> for String {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        cx.string(&self)
+    }
+}
+
+impl<'cx, T: IntoZqValue<'cx>> IntoZqValue<'cx> for Option<T> {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        match self {
+            Some(v) => v.into_zq_value(cx),
+            None => cx.undefined(),
+        }
+    }
+}
+
+impl<'cx, T: IntoZqValue<'cx>, E: IntoZqValue<'cx>> IntoZqValue<'cx> for Result<T, E> {
+    fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+        match self {
+            Ok(v) => v.into_zq_value(cx),
+            Err(e) => e.into_zq_value(cx),
+        }
+    }
+}
