@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 use std::marker::PhantomData;
 
 use crate::{
-    __private::global_api,
+    __private::zapi_singleton,
+    ZqEnv, ZqError, ZqStatus, ZqType, ZqValue,
     ffi::{ZqCallbackInfoS, ZqClassDef, ZqRawValue},
-    ZqEnv, ZqError, ZqStatus, ZqValue,
 };
 
 #[derive(Debug)]
@@ -30,54 +33,61 @@ impl<'cx> ZqCtx<'cx> {
     // ── value constructors ──
 
     pub fn string(&self, s: &str) -> ZqValue<'cx> {
-        match global_api() {
-            Some(api) => unsafe {
-                ZqValue::from_raw(self, (api.string_raw)(self.env, s.as_ptr(), s.len()))
-            },
-            None => unsafe { ZqValue::from_raw(self, 0) },
-        }
+        let api = zapi_singleton();
+        unsafe {
+                ZqValue::from_raw(self, (api.new_string_from_utf8)(self.env, s.as_ptr(), s.len()))
+            }
     }
 
     pub fn number(&self, n: f64) -> ZqValue<'cx> {
-        match global_api() {
-            Some(api) => unsafe { ZqValue::from_raw(self, (api.number_raw)(self.env, n)) },
-            None => unsafe { ZqValue::from_raw(self, 0) },
-        }
+        let api = zapi_singleton();
+        // Common fixed numbers come straight from the table constants
+        // (identical handles to `new_number`, minus the FFI call).
+        // Note `-0.0` is a distinct float and must fall through to
+        // `new_number` to keep its sign.
+        let raw = if n.is_nan() {
+            api.value_nan
+        } else if n == 1.0 {
+            api.value_one
+        } else if n == -1.0 {
+            api.value_negative_one
+        } else if n == 0.0 && n.is_sign_positive() {
+            api.value_zero
+        } else if n.is_infinite() {
+            if n.is_sign_positive() {
+                api.value_infinity
+            } else {
+                api.value_minus_infinity
+            }
+        } else {
+            unsafe { (api.new_number)(self.env, n) }
+        };
+        unsafe { ZqValue::from_raw(self, raw) }
     }
 
     pub fn bool(&self, v: bool) -> ZqValue<'cx> {
-        match global_api() {
-            Some(api) => unsafe { ZqValue::from_raw(self, (api.bool_raw)(self.env, v)) },
-            None => unsafe { ZqValue::from_raw(self, v as u64) },
-        }
+        let api = zapi_singleton();
+        // Fixed booleans come straight from the table constants.
+        unsafe { ZqValue::from_raw(self, if v { api.value_true } else { api.value_false }) }
     }
 
     pub fn undefined(&self) -> ZqValue<'cx> {
-        match global_api() {
-            Some(api) => unsafe { ZqValue::from_raw(self, (api.undefined_raw)(self.env)) },
-            None => unsafe { ZqValue::from_raw(self, 0) },
-        }
+        let api = zapi_singleton();
+        unsafe { ZqValue::from_raw(self, api.value_undefined) }
     }
 
     pub fn null(&self) -> ZqValue<'cx> {
-        match global_api() {
-            Some(api) => unsafe { ZqValue::from_raw(self, (api.null_raw)(self.env)) },
-            None => unsafe { ZqValue::from_raw(self, 0) },
-        }
+        let api = zapi_singleton();
+        unsafe { ZqValue::from_raw(self, api.value_null) }
     }
 
     pub fn object(&self) -> ZqValue<'cx> {
-        match global_api() {
-            Some(api) => unsafe { ZqValue::from_raw(self, (api.new_object)(self.env)) },
-            None => unsafe { ZqValue::from_raw(self, 0) },
-        }
+        let api = zapi_singleton();
+        unsafe { ZqValue::from_raw(self, (api.new_object)(self.env)) }
     }
 
     pub fn array(&self, vals: &[ZqValue<'cx>]) -> ZqValue<'cx> {
-        let api = match global_api() {
-            Some(api) => api,
-            None => return unsafe { ZqValue::from_raw(self, 0) },
-        };
+        let api = zapi_singleton();
         let arr = unsafe { (api.new_array)(self.env, vals.len()) };
         for (i, v) in vals.iter().enumerate() {
             let key = self.number(i as f64);
@@ -88,55 +98,45 @@ impl<'cx> ZqCtx<'cx> {
 
     /// Create a JS `Symbol(desc)`.
     pub fn symbol(&self, desc: &str) -> ZqValue<'cx> {
-        let api = match global_api() {
-            Some(api) => api,
-            None => return unsafe { ZqValue::from_raw(self, 0) },
-        };
+        let api = zapi_singleton();
         let d = self.string(desc);
         unsafe { ZqValue::from_raw(self, (api.new_symbol)(self.env, d.raw())) }
     }
 
-    /// JS `typeof`-style type code (see `ZQ_TYPE_*`).
-    pub fn type_of(&self, val: ZqValue<'cx>) -> i32 {
-        match global_api() {
-            Some(api) => unsafe { (api.type_of)(self.env, val.raw()) },
-            None => crate::ffi::ZQ_TYPE_UNDEFINED,
-        }
+    /// The type of a JS value (`ZqType`).
+    pub fn get_value_type(&self, val: ZqValue<'cx>) -> ZqType {
+        let api = zapi_singleton();
+        unsafe { (api.get_value_type)(self.env, val.raw()) }
     }
 
     /// Read a JS value as `f64` (ToNumber).
-    pub fn number_value(&self, val: ZqValue<'cx>) -> f64 {
-        match global_api() {
-            Some(api) => unsafe { (api.number_value)(self.env, val.raw()) },
-            None => f64::NAN,
-        }
+    pub fn value_to_float64(&self, val: ZqValue<'cx>) -> f64 {
+        let api = zapi_singleton();
+        unsafe { (api.value_to_float64)(self.env, val.raw()) }
     }
 
     /// Read a JS value as bool (ToBoolean).
-    pub fn bool_value(&self, val: ZqValue<'cx>) -> bool {
-        match global_api() {
-            Some(api) => unsafe { (api.bool_value)(self.env, val.raw()) != 0 },
-            None => false,
-        }
+    pub fn value_to_bool(&self, val: ZqValue<'cx>) -> bool {
+        let api = zapi_singleton();
+        unsafe { (api.value_to_bool)(self.env, val.raw()) != 0 }
     }
 
     /// Read the UTF-8 contents of a JS string value.
     pub fn read_string(&self, val: ZqRawValue) -> String {
-        let api = match global_api() {
-            Some(api) => api,
-            None => return String::new(),
-        };
-        let len = unsafe { (api.string_len)(self.env, val) };
-        let mut buf = vec![0u8; len];
-        if len > 0 {
-            unsafe { (api.get_string_utf8)(self.env, val, buf.as_mut_ptr(), len, 0) };
+        let api = zapi_singleton();
+        // Measure-then-copy: a null buf returns the byte count; -1 = not a string.
+        let len = unsafe { (api.get_string_utf8)(self.env, val, std::ptr::null_mut(), 0, 0) };
+        if len <= 0 {
+            return String::new();
         }
+        let mut buf = vec![0u8; len as usize];
+        unsafe { (api.get_string_utf8)(self.env, val, buf.as_mut_ptr(), len as usize, 0) };
         String::from_utf8_lossy(&buf).into_owned()
     }
 
     /// Look up a property on the global object (`globalThis[name]`).
     pub fn get_global(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
-        let api = global_api().ok_or(ZqError::new(ZqStatus::Error, Some("no api".into())))?;
+        let api = zapi_singleton();
         let key = self.string(name);
         Ok(unsafe { ZqValue::from_raw(self, (api.get_global)(self.env, key.raw())) })
     }
@@ -147,19 +147,22 @@ impl<'cx> ZqCtx<'cx> {
         target: ZqValue<'cx>,
         args: &[ZqValue<'cx>],
     ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = global_api().ok_or(ZqError::new(ZqStatus::Error, Some("no api".into())))?;
+        let api = zapi_singleton();
         let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
         let mut info = ZqCallbackInfoS {
             target: target.raw(),
             this: 0,
             args: raw_args.as_ptr(),
             argc: raw_args.len() as u32,
-            ret: 0,
-            threw: 0,
+            thrown: 0,
             magic: 0,
         };
         let ret = unsafe { (api.call_constructor)(self.env, &mut info) };
-        Ok(unsafe { ZqValue::from_raw(self, ret) })
+        if ret == api.value_exception {
+            Err(ZqError::new(ZqStatus::Exception, Some("call_constructor threw".into())))
+        } else {
+            Ok(unsafe { ZqValue::from_raw(self, ret) })
+        }
     }
 
     /// Register a global GC trace callback for values the extension holds
@@ -172,7 +175,7 @@ impl<'cx> ZqCtx<'cx> {
         cb: Option<crate::ffi::ZqGcTraceFn>,
         opaque: *mut std::ffi::c_void,
     ) -> Result<(), ZqError> {
-        let api = global_api().ok_or(ZqError::new(ZqStatus::Error, Some("no api".into())))?;
+        let api = zapi_singleton();
         let r = unsafe { (api.set_gc_trace_func)(self.env, cb, opaque) };
         if r < 0 {
             Err(ZqError::new(
@@ -188,15 +191,11 @@ impl<'cx> ZqCtx<'cx> {
         unsafe { ZqValue::from_raw(self, raw) }
     }
 
-    pub fn rt_ptr(&self) -> *mut std::ffi::c_void {
+    pub fn rt(&self) -> *mut std::ffi::c_void {
         if self.env.is_null() {
             return std::ptr::null_mut();
         }
         unsafe { (*self.env).rt }
-    }
-
-    pub fn rt(&self) -> *mut std::ffi::c_void {
-        self.rt_ptr()
     }
 
     pub fn scope_arena(&self) -> *mut std::ffi::c_void {
@@ -213,7 +212,7 @@ impl<'cx> ZqCtx<'cx> {
     // ── class / instance helpers (requires GLOBAL_API) ──
 
     pub fn register_class(&self, def: &ZqClassDef) -> Result<i32, ZqError> {
-        let api = global_api().ok_or(ZqError::new(ZqStatus::Error, Some("no api".into())))?;
+        let api = zapi_singleton();
         let r = unsafe { (api.register_class)(self.env, def) };
         if r < 0 {
             Err(ZqError::new(
@@ -230,7 +229,7 @@ impl<'cx> ZqCtx<'cx> {
         def: &ZqClassDef,
         opaque: *mut std::ffi::c_void,
     ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = global_api().ok_or(ZqError::new(ZqStatus::Error, Some("no api".into())))?;
+        let api = zapi_singleton();
         let r = unsafe { (api.new_instance)(self.env, def, opaque) };
         if r == 0 {
             Err(ZqError::new(
@@ -243,10 +242,7 @@ impl<'cx> ZqCtx<'cx> {
     }
 
     pub fn get_native_ptr(&self, val: ZqValue<'cx>) -> *mut std::ffi::c_void {
-        let api = match global_api() {
-            Some(a) => a,
-            None => return std::ptr::null_mut(),
-        };
+        let api = zapi_singleton();
         unsafe { (api.get_native_ptr)(self.env, val.raw()) }
     }
 
@@ -260,19 +256,22 @@ impl<'cx> ZqCtx<'cx> {
         this: ZqValue<'cx>,
         args: &[ZqValue<'cx>],
     ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = global_api().ok_or(ZqError::new(ZqStatus::Error, Some("no api".into())))?;
+        let api = zapi_singleton();
         let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
         let mut info = ZqCallbackInfoS {
             target: target.raw(),
             this: this.raw(),
             args: raw_args.as_ptr(),
             argc: raw_args.len() as u32,
-            ret: 0,
-            threw: 0,
+            thrown: 0,
             magic: 0,
         };
         let ret = unsafe { (api.call_function)(self.env, &mut info) };
-        Ok(unsafe { ZqValue::from_raw(self, ret) })
+        if ret == api.value_exception {
+            Err(ZqError::new(ZqStatus::Exception, Some("call_function threw".into())))
+        } else {
+            Ok(unsafe { ZqValue::from_raw(self, ret) })
+        }
     }
 }
 

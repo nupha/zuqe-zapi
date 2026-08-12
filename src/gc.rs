@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 use std::ffi::c_void;
 
 use crate::{
-    __private::global_api,
-    ffi::{ZqGcTraceCtxS, ZqRawValue},
+    __private::zapi_singleton,
     ZqError, ZqStatus,
+    ffi::{ZqGcTraceCtxS, ZqRawValue},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -26,7 +29,7 @@ impl ZqGcTraceCtx {
 
     /// Reports `val` to the GC so its graph stays reachable during tracing.
     pub fn mark(&self, val: ZqRawValue) -> Result<(), ZqError> {
-        let api = global_api().ok_or(ZqError::new(ZqStatus::Error, Some("no api".into())))?;
+        let api = zapi_singleton();
         let r = unsafe { (api.gc_add_trace)(std::ptr::null_mut(), self.raw, val) };
         if r < 0 {
             Err(ZqError::new(

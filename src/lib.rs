@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 pub mod class;
 pub mod ctx;
 pub mod error;
@@ -15,7 +18,7 @@ pub mod prelude;
 pub use class::Class;
 pub use ctx::ZqCtx;
 pub use error::{ZqError, ZqStatus};
-pub use ffi::{ZqEnv, ZqFieldDef, ZqRawValue};
+pub use ffi::{ZqEnv, ZqFieldDef, ZqRawValue, ZqType};
 pub use gc::{ZqGcTrace, ZqGcTraceCtx};
 pub use traits::{FromZqValue, IntoZqValue};
-pub use value::{ZqCallInfo, ZqType, ZqValue};
+pub use value::{ZqCallInfo, ZqValue};

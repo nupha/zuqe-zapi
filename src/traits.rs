@@ -1,4 +1,7 @@
-use crate::{ffi::ZqRawValue, ZqCtx, ZqError, ZqValue};
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
+use crate::{ZqCtx, ZqError, ZqValue, ffi::ZqRawValue};
 
 /// 从 JS 值解包为 Rust 类型。
 ///
@@ -30,25 +33,25 @@ impl<'cx> FromZqValue<'cx> for ZqRawValue {
 
 impl<'cx> FromZqValue<'cx> for i32 {
     fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.number_value(val) as i32)
+        Ok(cx.value_to_float64(val) as i32)
     }
 }
 
 impl<'cx> FromZqValue<'cx> for i64 {
     fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.number_value(val) as i64)
+        Ok(cx.value_to_float64(val) as i64)
     }
 }
 
 impl<'cx> FromZqValue<'cx> for f64 {
     fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.number_value(val))
+        Ok(cx.value_to_float64(val))
     }
 }
 
 impl<'cx> FromZqValue<'cx> for bool {
     fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.bool_value(val))
+        Ok(cx.value_to_bool(val))
     }
 }
 

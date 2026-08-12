@@ -1,7 +1,27 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 use std::ffi::{c_char, c_void};
 
-pub const ZQ_ABI_VERSION: u32 = 4;
-pub const ZQ_API_VERSION: u32 = 2;
+/// ABI（二进制布局）契约版本。
+///
+/// 含义：`ZqApi` 表及各 `Zq*S` 结构体的内存布局和函数指针签名。
+/// 用途：扩展在 `zq_module_register` 校验 `api.version == ZQ_ABI_VERSION`，
+/// 不一致即拒绝加载，防止二进制不兼容的扩展跑在布局不符的 host 上。
+/// 递增时机：仅当**破坏布局**的改动（增删字段、改函数签名）对外发布时；
+/// 开发期保持恒定（host 与扩展同源编译，此校验只是兜底）。
+pub const ZQ_ABI_VERSION: u32 = 1;
+
+/// API（功能面）版本。
+///
+/// 含义：`ZqApi` 表提供的能力层级，不涉及二进制布局。
+/// 用途：扩展在 `ZqModuleInfo.min_api_version` 声明所需的最低 API 层级，
+/// host 据此判定"自身 API 版本 ≥ 扩展所需"后才加载。
+/// 递增时机：仅当**新增** API 能力（向后兼容、追加函数）时；破坏性改动属
+/// ABI 变更，归 `ZQ_ABI_VERSION` 管。
+///
+/// 当前两者都是 1：开发期，未对外发布。
+pub const ZQ_API_VERSION: u32 = 1;
 
 // ── ZqFieldDef kinds (mirror zuqe `FieldDetail`) ──
 
@@ -30,14 +50,38 @@ pub const ZQ_PROP_CONFIGURABLE: u32 = 1;
 pub const ZQ_PROP_WRITABLE: u32 = 1 << 1;
 pub const ZQ_PROP_ENUMERABLE: u32 = 1 << 2;
 
-pub const ZQ_TYPE_UNDEFINED: i32 = 0;
-pub const ZQ_TYPE_NULL: i32 = 1;
-pub const ZQ_TYPE_BOOL: i32 = 2;
-pub const ZQ_TYPE_NUMBER: i32 = 3;
-pub const ZQ_TYPE_STRING: i32 = 4;
-pub const ZQ_TYPE_SYMBOL: i32 = 5;
-pub const ZQ_TYPE_FUNCTION: i32 = 6;
-pub const ZQ_TYPE_OBJECT: i32 = 7;
+/// 一个 JS 值的类型（`typeof` 风格）。`#[repr(i32)]`，cbindgen 会翻译成 C enum。
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZqType {
+    Undefined = 0,
+    Null = 1,
+    Bool = 2,
+    Number = 3,
+    String = 4,
+    Symbol = 5,
+    Function = 6,
+    Object = 7,
+    /// The exception sentinel (`value_exception`); not a normal JS value.
+    Exception = 8,
+}
+
+impl ZqType {
+    /// The JS `typeof` name ("undefined", "boolean", ... "object").
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Undefined => "undefined",
+            Self::Null => "object", // JS quirk: `typeof null` is "object"
+            Self::Bool => "boolean",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Symbol => "symbol",
+            Self::Function => "function",
+            Self::Object => "object",
+            Self::Exception => "exception",
+        }
+    }
+}
 
 /// 引擎值的 ABI 表示（GC 节点句柄）。**不是 newtype**，是裸 `u64` type alias。
 pub type ZqRawValue = u64;
@@ -48,11 +92,15 @@ pub type ZqRawValue = u64;
 pub type ZqEnv = *mut ZqEnvS;
 
 /// zapi 函数体 FFI 签名。
+///
+/// **返回值就是 JS 值**：成功时返回结果 handle；出错时返回 `value_exception`
+/// 哨兵（quickjs 的 `JS_EXCEPTION` 同款约定）。需要抛出具体 JS 值时，先把它写进
+/// `info.thrown` 再返回 `value_exception`，host 据此抛对应值。
 pub type ZapiBodyFn = unsafe extern "C" fn(env: ZqEnv, info: *mut ZqCallbackInfoS) -> ZqRawValue;
 
 /// `ZqFieldDef::value_fn` 签名：用 env 构建一个 JS 值，把 raw handle 写进 `*out`。
 /// 返回 0 成功、非 0 失败。仅用于 `ZQ_FIELD_VALUE`。
-pub type ZqExportValueFn = unsafe extern "C" fn(env: ZqEnv, out: *mut ZqRawValue) -> i32;
+pub type ZqFieldValueFn = unsafe extern "C" fn(env: ZqEnv, out: *mut ZqRawValue) -> i32;
 
 /// 全局（线程态）GC trace 回调：每次 GC 时被 host 调用，把扩展在 native 存储
 /// （thread_local 等）里持有的 JS 值经 `ZqGcTraceCtx::mark` 告知 GC。
@@ -84,7 +132,10 @@ pub struct ZqGcTraceCtxS {
     pub inner: *mut c_void,
 }
 
-/// 回调信息，包含 target / this / args / return / exception。
+/// 回调信息，包含 target / this / args / 异常值 / magic。
+///
+/// 成功值**不**走这个结构——`body` 直接把结果作为返回值返回。只有"要抛的具体
+/// JS 值"才经 `thrown` 传出（返回 `value_exception` 时 host 读取它）。
 #[repr(C)]
 pub struct ZqCallbackInfoS {
     /// 被调用函数对象
@@ -95,12 +146,8 @@ pub struct ZqCallbackInfoS {
     pub args: *const ZqRawValue,
     /// 参数个数
     pub argc: u32,
-    /// 返回值（set_return 写入）
-    pub ret: ZqRawValue,
-    /// 异常哨兵（0 = 无）
-    pub threw: ZqRawValue,
-
-    // ── v4: magic ──
+    /// 要抛出的 JS 值（0 = 无）；返回 `value_exception` 前由扩展写入。
+    pub thrown: ZqRawValue,
     /// 注册时指定的 magic（`cc.magic()`），用于一个 body 服务多个方法的分发。
     pub magic: i32,
 }
@@ -143,7 +190,7 @@ pub struct ZqFieldDef {
     /// CLASS：类定义（host 据此注册并发布构造器）。
     pub class_def: *const ZqClassDef,
     /// VALUE：惰性值构建器（求值期带 env 调用，写 `*out`）。
-    pub value_fn: Option<ZqExportValueFn>,
+    pub value_fn: Option<ZqFieldValueFn>,
 
     // ── 常量槽 ──
     /// STR：常量字符串（NUL 结尾）。
@@ -225,7 +272,7 @@ impl ZqFieldDef {
     }
 
     /// 惰性构建的值（`FieldDef::LAZY_VALUE` 语义）。
-    pub const fn value(name: *const c_char, value_fn: ZqExportValueFn) -> Self {
+    pub const fn value(name: *const c_char, value_fn: ZqFieldValueFn) -> Self {
         Self {
             name,
             kind: ZQ_FIELD_VALUE,
@@ -424,7 +471,9 @@ impl ZqModuleInfo {
 
 /// 稳定的 C ABI 函数指针表。
 ///
-/// **字段顺序即 ABI 契约**：新增字段只能追加到末尾，且必须 bump `ZQ_ABI_VERSION`。
+/// **字段顺序即 ABI 契约**：新增字段只能追加到末尾。开发期接口改动**不逐次
+/// bump `ZQ_ABI_VERSION`**（host 与扩展总是同源编译）；仅在对外的 ABI 冻结 /
+/// 发布时递增一次。
 ///
 /// host 端构造该表并填充全部函数指针；扩展侧通过 `*mut ZqApi` 引用它。
 #[repr(C)]
@@ -432,17 +481,22 @@ pub struct ZqApi {
     // ── 版本校验 ──
     pub version: u32,
 
-    // ── 值构造 (primitives) ──
-    pub undefined_raw: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
-    pub null_raw: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
-    pub bool_raw: unsafe extern "C" fn(env: ZqEnv, v: bool) -> ZqRawValue,
-    pub number_raw: unsafe extern "C" fn(env: ZqEnv, v: f64) -> ZqRawValue,
-    pub string_raw: unsafe extern "C" fn(env: ZqEnv, ptr: *const u8, len: usize) -> ZqRawValue,
+    pub new_number: unsafe extern "C" fn(env: ZqEnv, v: f64) -> ZqRawValue,
+    /// 从 **UTF-8 编码的字节** 构造 JS 字符串（`ptr`/`len` 指向的字节必须是合法
+    /// UTF-8；host 不校验，非法序列按引擎策略处理）。与 `get_string_utf8`
+    /// 配对：读出是 UTF-8，写入也是 UTF-8。失败返回 `value_exception`。
+    pub new_string_from_utf8:
+        unsafe extern "C" fn(env: ZqEnv, ptr: *const u8, len: usize) -> ZqRawValue,
     pub new_symbol: unsafe extern "C" fn(env: ZqEnv, desc: ZqRawValue) -> ZqRawValue,
-    pub get_symbol_description: unsafe extern "C" fn(env: ZqEnv, sym: ZqRawValue) -> ZqRawValue,
+    pub new_object: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
+    pub new_array: unsafe extern "C" fn(env: ZqEnv, len: usize) -> ZqRawValue,
 
-    // ── 字符串读写 ──
-    pub string_len: unsafe extern "C" fn(env: ZqEnv, s: ZqRawValue) -> usize,
+    /// 拷贝字符串 `s` 的 UTF-8 字节到 `buf`，从 `offset` 字节起。
+    ///
+    /// * `buf == null`（测量模式）：不写任何字节，返回从 `offset` 起到结尾所需
+    ///   的字节数，调用方据此分配缓冲（quickjs `JS_GetStringUtf8` 习惯）；
+    /// * `buf != null`：拷贝 `min(buf_len, 剩余字节数)` 字节，返回实际拷贝数；
+    /// * 返回 `-1` 表示 `s` 不是字符串。
     pub get_string_utf8: unsafe extern "C" fn(
         env: ZqEnv,
         s: ZqRawValue,
@@ -450,10 +504,8 @@ pub struct ZqApi {
         buf_len: usize,
         offset: usize,
     ) -> i32,
+    pub get_symbol_description: unsafe extern "C" fn(env: ZqEnv, sym: ZqRawValue) -> ZqRawValue,
 
-    // ── 对象 / 数组 / 属性 ──
-    pub new_object: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
-    pub new_array: unsafe extern "C" fn(env: ZqEnv, len: usize) -> ZqRawValue,
     pub set_property: unsafe extern "C" fn(
         env: ZqEnv,
         obj: ZqRawValue,
@@ -467,10 +519,12 @@ pub struct ZqApi {
     pub has_property: unsafe extern "C" fn(env: ZqEnv, obj: ZqRawValue, key: ZqRawValue) -> i32,
     pub delete_property:
         unsafe extern "C" fn(env: ZqEnv, obj: ZqRawValue, key: ZqRawValue, throw: i32) -> i32,
+
     pub array_push: unsafe extern "C" fn(env: ZqEnv, arr: ZqRawValue, val: ZqRawValue) -> i32,
     pub array_set:
         unsafe extern "C" fn(env: ZqEnv, arr: ZqRawValue, idx: ZqRawValue, val: ZqRawValue) -> i32,
     pub array_len: unsafe extern "C" fn(env: ZqEnv, arr: ZqRawValue) -> ZqRawValue,
+
     pub get_global: unsafe extern "C" fn(env: ZqEnv, name: ZqRawValue) -> ZqRawValue,
 
     // ── 函数调用 ──
@@ -489,15 +543,17 @@ pub struct ZqApi {
     ) -> ZqRawValue,
     pub get_native_ptr: unsafe extern "C" fn(env: ZqEnv, obj: ZqRawValue) -> *mut c_void,
 
-    // ── value introspection & construction ──
-    /// JS `typeof`-style type code (see `ZQ_TYPE_*`).
-    pub type_of: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> i32,
-    /// ToNumber: read a JS value as f64 (NaN for non-numeric values).
-    pub number_value: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> f64,
-    /// ToBoolean: 1 if truthy, 0 otherwise.
-    pub bool_value: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> i32,
-    /// ToString: returns a JS string value.
-    pub string_value: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> ZqRawValue,
+    // ── value introspection ──
+    /// The type of a JS value (`ZqType`, a C enum across the ABI).
+    pub get_value_type: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> ZqType,
+
+    /// Coerce a JS value to an f64 number (ToNumber; NaN for non-numeric).
+    pub value_to_float64: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> f64,
+    /// Coerce a JS value to a boolean (ToBoolean; 1 if truthy, 0 otherwise).
+    pub value_to_bool: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> i32,
+    /// Coerce a JS value to a JS string (ToString; a string handle).
+    pub value_to_string: unsafe extern "C" fn(env: ZqEnv, val: ZqRawValue) -> ZqRawValue,
+
     /// Invoke `target` as a constructor (`new target(...args)`).
     pub call_constructor:
         unsafe extern "C" fn(env: ZqEnv, info: *mut ZqCallbackInfoS) -> ZqRawValue,
@@ -506,9 +562,37 @@ pub struct ZqApi {
     /// Register a global (thread_local) GC trace callback. Called by the
     /// extension (typically in its module `init`) so the host can keep JS values
     /// held in native storage alive across collections. 0 on success, <0 on error.
-    pub set_gc_trace_func: unsafe extern "C" fn(
-        env: ZqEnv,
-        cb: Option<ZqGcTraceFn>,
-        opaque: *mut c_void,
-    ) -> i32,
+    pub set_gc_trace_func:
+        unsafe extern "C" fn(env: ZqEnv, cb: Option<ZqGcTraceFn>, opaque: *mut c_void) -> i32,
+
+    // ── host-provided constant value handles ──
+    // Fixed JS values the host precomputes once. They are plain constants, so
+    // extensions read them directly from the table instead of calling an FFI
+    // function (`undefined`/`null`/`true`/`false` have no `*_raw` fn at all).
+    // The engine-internal sentinels (`exception`, `uninitialized`) are *not*
+    // exposed: returning them to JS would corrupt the trampoline.
+    /// The `undefined` value handle.
+    pub value_undefined: ZqRawValue,
+    /// The `null` value handle.
+    pub value_null: ZqRawValue,
+    /// The boolean `true` value handle.
+    pub value_true: ZqRawValue,
+    /// The boolean `false` value handle.
+    pub value_false: ZqRawValue,
+    /// The `NaN` number value handle.
+    pub value_nan: ZqRawValue,
+    /// The integer `0` number value handle (`+0`; the `-0` float is distinct).
+    pub value_zero: ZqRawValue,
+    /// The integer `1` number value handle.
+    pub value_one: ZqRawValue,
+    /// The integer `-1` number value handle.
+    pub value_negative_one: ZqRawValue,
+    /// The `+Infinity` number value handle.
+    pub value_infinity: ZqRawValue,
+    /// The `-Infinity` number value handle.
+    pub value_minus_infinity: ZqRawValue,
+    /// The **exception sentinel** (`JS_EXCEPTION` style): a `body` returns this
+    /// handle to signal an error instead of a result value. It is not a value
+    /// the extension should hand to JS.
+    pub value_exception: ZqRawValue,
 }

@@ -5,3 +5,6 @@ edition = "2024"
 description = "Zuqe native extension ABI contract crate"
 repository = "https://github.com/nupha/zuqe-zapi"
 license = "Apache-2.0"
+
+[dev-dependencies]
+zuqe_zapi_macros = { path = "../zuqe-zapi-macros" }
