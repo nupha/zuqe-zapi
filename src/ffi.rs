@@ -109,6 +109,15 @@ pub type ZqFieldValueFn = unsafe extern "C" fn(env: ZqEnv, out: *mut ZqRawValue)
 /// 与 class payload 的 `ZqClassDef.gc_trace` 同签名，通过 `set_gc_trace_func` 注册。
 pub type ZqGcTraceFn = unsafe extern "C" fn(trace_ctx: *mut ZqGcTraceCtxS, opaque: *mut c_void);
 
+// ── job queue (cross-thread async bridge) ──
+/// Job run callback. Runs on the JS thread once per event-loop tick.
+/// Returns: 0 = Done, 1 = Again (re-queue next tick), 2 = AgainNoHold
+/// (re-queue without keeping the process alive), <0 = error (treated as Done).
+pub type ZqJobRunFn = unsafe extern "C" fn(data: *mut c_void, env: ZqEnv) -> i32;
+/// Optional GC trace for JS values held inside `data`.
+pub type ZqJobTraceFn =
+    unsafe extern "C" fn(data: *mut c_void, trace_ctx: *mut ZqGcTraceCtxS);
+
 // ──────────────────────────────────────
 // 不透明结构体前向声明（repr(C) 但字段不对外导出）
 // ──────────────────────────────────────
@@ -566,6 +575,18 @@ pub struct ZqApi {
     /// held in native storage alive across collections. 0 on success, <0 on error.
     pub set_gc_trace_func:
         unsafe extern "C" fn(env: ZqEnv, cb: Option<ZqGcTraceFn>, opaque: *mut c_void) -> i32,
+
+    // ── job queue (cross-thread async bridge) ──
+    /// Queue a polling job on this context's event loop (the fetch/fs async
+    /// pattern): `run(data)` executes once per tick until it returns Done or
+    /// an error. Use it to pump results from an OS worker thread into JS by
+    /// calling back with `call_function`.
+    pub queue_job: unsafe extern "C" fn(
+        env: ZqEnv,
+        run: ZqJobRunFn,
+        trace: Option<ZqJobTraceFn>,
+        data: *mut c_void,
+    ) -> i32,
 
     // ── host-provided constant value handles ──
     // Fixed JS values the host precomputes once. They are plain constants, so

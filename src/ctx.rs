@@ -273,6 +273,28 @@ impl<'cx> ZqCtx<'cx> {
             Ok(unsafe { ZqValue::from_raw(self, ret) })
         }
     }
+
+    /// Create a JS error object from a `ZqError` and return its raw handle.
+    /// Used by macro trampolines to throw proper JS errors when `ZqError`
+    /// carries a message but no pre-built exception handle.
+    pub fn throw_error(&self, err: &ZqError) -> ZqRawValue {
+        let name = match err.status() {
+            ZqStatus::TypeError => "TypeError",
+            ZqStatus::RangeError => "RangeError",
+            _ => "Error",
+        };
+        let msg = err.message().unwrap_or("");
+
+        if let Ok(ctor) = self.get_global(name) {
+            let msg_val = self.string(msg);
+            if let Ok(obj) = self.call_constructor(ctor, &[msg_val]) {
+                return obj.raw();
+            }
+        }
+
+        // Fallback: return exception sentinel
+        zapi_singleton().value_exception
+    }
 }
 
 impl<'cx> Clone for ZqCtx<'cx> {
