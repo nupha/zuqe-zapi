@@ -588,6 +588,16 @@ pub struct ZqApi {
         data: *mut c_void,
     ) -> i32,
 
+    // ── exception hygiene ──
+    /// Take the pending exception and return its raw handle
+    /// (`value_undefined` if none). After this call `cur_exception` is empty;
+    /// the returned handle is GC-rooted until the current scope ends.
+    pub take_exception: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
+
+    /// Peek the pending exception without consuming it
+    /// (`value_undefined` if none).
+    pub exception: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
+
     // ── host-provided constant value handles ──
     // Fixed JS values the host precomputes once. They are plain constants, so
     // extensions read them directly from the table instead of calling an FFI

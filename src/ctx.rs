@@ -295,6 +295,23 @@ impl<'cx> ZqCtx<'cx> {
         // Fallback: return exception sentinel
         zapi_singleton().value_exception
     }
+
+    /// Peek the pending JS exception without consuming it.
+    /// Returns the exception value, or `undefined` if none is pending.
+    pub fn exception(&self) -> ZqValue<'cx> {
+        let api = zapi_singleton();
+        let raw = unsafe { (api.exception)(self.env) };
+        unsafe { ZqValue::from_raw(self, raw) }
+    }
+
+    /// Take the pending JS exception, clearing `cur_exception` and returning
+    /// the exception value (GC-rooted until scope ends).
+    /// Returns `undefined` if no exception was pending.
+    pub fn take_exception(&self) -> ZqValue<'cx> {
+        let api = zapi_singleton();
+        let raw = unsafe { (api.take_exception)(self.env) };
+        unsafe { ZqValue::from_raw(self, raw) }
+    }
 }
 
 impl<'cx> Clone for ZqCtx<'cx> {
