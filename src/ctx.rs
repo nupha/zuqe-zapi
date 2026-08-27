@@ -231,10 +231,10 @@ impl<'cx> ZqCtx<'cx> {
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
         let r = unsafe { (api.new_instance)(self.env, def, opaque) };
-        if r == 0 {
+        if r == 0 || r == api.value_exception {
             Err(ZqError::new(
-                ZqStatus::Error,
-                Some("new_instance failed".into()),
+                ZqStatus::Exception,
+                Some("new_instance failed: class may not be registered or creation error".into()),
             ))
         } else {
             Ok(unsafe { ZqValue::from_raw(self, r) })
