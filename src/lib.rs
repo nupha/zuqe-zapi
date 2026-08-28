@@ -20,5 +20,9 @@ pub use ctx::ZqCtx;
 pub use error::{ZqError, ZqStatus};
 pub use ffi::{ZqEnv, ZqFieldDef, ZqRawValue, ZqType};
 pub use gc::{ZqGcTrace, ZqGcTraceCtx};
+/// Canonical filesystem path of the dylib this extension was loaded from
+/// (`None` when the host predates the feature). Set before
+/// `zq_module_register` runs; readable anywhere in the extension.
+pub use __private::module_path;
 pub use traits::{FromZqValue, IntoZqValue};
 pub use value::{ZqCallInfo, ZqValue};

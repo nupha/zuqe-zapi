@@ -464,6 +464,11 @@ pub struct ZqModuleInfo {
     pub exports_len: usize,
     /// 模块加载初始化钩子（求值期带 env 调用；非 0 = 失败）
     pub init: Option<unsafe extern "C" fn(env: ZqEnv) -> i32>,
+    /// Host 预填的本 dylib 规范路径（NUL 结尾 UTF-8）。在
+    /// `zq_module_register` 调用前写入，扩展可在注册期或后续通过
+    /// `zuqe_zapi::module_path()` 读取（Node dlopen-filename 模式）。
+    /// 旧 host 为 null。追加在末尾以保持旧扩展的 `#[repr(C)]` 布局稳定。
+    pub path: *const c_char,
 }
 
 impl ZqModuleInfo {
@@ -472,6 +477,15 @@ impl ZqModuleInfo {
             &[]
         } else {
             unsafe { std::slice::from_raw_parts(self.exports, self.exports_len) }
+        }
+    }
+
+    /// Host 提供的 dylib 路径作为 `&str`（null / 非 UTF-8 → `None`）。
+    pub fn path_str(&self) -> Option<&str> {
+        if self.path.is_null() {
+            None
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(self.path) }.to_str().ok()
         }
     }
 }
