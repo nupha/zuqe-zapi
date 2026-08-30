@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
 
+pub mod channel;
 pub mod class;
 pub mod ctx;
 pub mod error;
@@ -16,7 +17,8 @@ pub mod __private;
 pub mod prelude;
 
 pub use class::Class;
-pub use ctx::ZqCtx;
+pub use channel::WakeSender;
+pub use ctx::{ZqCtx, ZqWakeHandle};
 pub use error::{ZqError, ZqStatus};
 pub use ffi::{ZqEnv, ZqFieldDef, ZqRawValue, ZqType};
 pub use gc::{ZqGcTrace, ZqGcTraceCtx};

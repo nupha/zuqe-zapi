@@ -97,6 +97,13 @@ pub type ZqEnv = *mut ZqEnvS;
 ///
 /// **返回值就是 JS 值**：成功时返回结果 handle；出错时返回 `value_exception`
 /// 哨兵（quickjs 的 `JS_EXCEPTION` 同款约定）。需要抛出具体 JS 值时，先把它写进
+/// 不透明唤醒句柄（host 端定义具体布局，扩展侧仅持指针）。
+/// See `ZqApi::wake_handle_new` / `wake_handle_wake` / `wake_handle_free`.
+#[repr(C)]
+pub struct ZqWakeHandleS {
+    _opaque: [*mut c_void; 0],
+}
+
 /// `info.thrown` 再返回 `value_exception`，host 据此抛对应值。
 pub type ZapiBodyFn = unsafe extern "C" fn(env: ZqEnv, info: *mut ZqCallbackInfoS) -> ZqRawValue;
 
@@ -115,8 +122,7 @@ pub type ZqGcTraceFn = unsafe extern "C" fn(trace_ctx: *mut ZqGcTraceCtxS, opaqu
 /// (re-queue without keeping the process alive), <0 = error (treated as Done).
 pub type ZqJobRunFn = unsafe extern "C" fn(data: *mut c_void, env: ZqEnv) -> i32;
 /// Optional GC trace for JS values held inside `data`.
-pub type ZqJobTraceFn =
-    unsafe extern "C" fn(data: *mut c_void, trace_ctx: *mut ZqGcTraceCtxS);
+pub type ZqJobTraceFn = unsafe extern "C" fn(data: *mut c_void, trace_ctx: *mut ZqGcTraceCtxS);
 
 // ──────────────────────────────────────
 // 不透明结构体前向声明（repr(C) 但字段不对外导出）
@@ -611,6 +617,17 @@ pub struct ZqApi {
     /// Peek the pending exception without consuming it
     /// (`value_undefined` if none).
     pub exception: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
+
+    // ── event-loop wake (cross-thread) ──
+    /// Opaque wake handle. Created on the JS thread via `wake_handle_new`;
+    /// `wake_handle_wake` is safe from any thread (worker threads included);
+    /// release with `wake_handle_free`.
+    /// 唤醒句柄：扩展的 worker 线程在把结果推入共享状态后调用
+    /// `wake_handle_wake`，让 park 中的 JS 事件循环立即醒来处理。
+    /// 若不调用，纯事件驱动模式下事件循环会一直挂起（无兜底轮询时）。
+    pub wake_handle_new: unsafe extern "C" fn(env: ZqEnv) -> *mut ZqWakeHandleS,
+    pub wake_handle_wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
+    pub wake_handle_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
 
     // ── host-provided constant value handles ──
     // Fixed JS values the host precomputes once. They are plain constants, so

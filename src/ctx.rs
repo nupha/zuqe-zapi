@@ -5,9 +5,42 @@ use std::marker::PhantomData;
 
 use crate::{
     __private::zapi_singleton,
-    ZqEnv, ZqError, ZqStatus, ZqType, ZqValue,
+    ZqEnv, ZqError, ZqStatus, ZqType, ZqValue, ffi,
     ffi::{ZqCallbackInfoS, ZqClassDef, ZqRawValue},
 };
+
+/// Clonable, thread-safe handle to wake the JS event loop from any thread.
+///
+/// Create during a callback (`ctx.wake_handle()`) and store it in the
+/// worker/async state that produces the result; call `wake()` after pushing
+/// the result so a parked event loop re-ticks immediately. Without this, a
+/// pure event-driven host (quantum poll off) would hang until some other
+/// event happens to fire.
+#[derive(Debug, Clone)]
+pub struct ZqWakeHandle {
+    raw: *mut ffi::ZqWakeHandleS,
+    /// Captured at creation (on the JS thread): `zapi_singleton()` is
+    /// thread-local, so `wake()` from worker threads must not touch it.
+    wake_fn: unsafe extern "C" fn(*mut ffi::ZqWakeHandleS),
+    free_fn: unsafe extern "C" fn(*mut ffi::ZqWakeHandleS),
+}
+
+unsafe impl Send for ZqWakeHandle {}
+unsafe impl Sync for ZqWakeHandle {}
+
+impl ZqWakeHandle {
+    /// Wake the parked JS event loop. Cheap no-op when not parked.
+    /// Thread-safe (uses captured fn pointers, no thread-local access).
+    pub fn wake(&self) {
+        unsafe { (self.wake_fn)(self.raw) };
+    }
+}
+
+impl Drop for ZqWakeHandle {
+    fn drop(&mut self) {
+        unsafe { (self.free_fn)(self.raw) };
+    }
+}
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -30,13 +63,42 @@ impl<'cx> ZqCtx<'cx> {
         self.env
     }
 
+    /// Capture a wake handle for this context's event loop. Call on the JS
+    /// thread (inside a callback / job) and move the handle into whatever
+    /// thread or task produces the async result.
+    pub fn wake_handle(&self) -> ZqWakeHandle {
+        let api = zapi_singleton();
+        ZqWakeHandle {
+            raw: unsafe { (api.wake_handle_new)(self.env) },
+            wake_fn: api.wake_handle_wake,
+            free_fn: api.wake_handle_free,
+        }
+    }
+
+    /// Create an unbounded channel whose sender wakes this event loop
+    /// automatically on every send and on drop. Pair the receiver with a
+    /// `queue_job` polling job: the worker's sends wake the parked loop, so
+    /// producers cannot forget to wake. See [`crate::channel::WakeSender`].
+    pub fn make_wake_channel<T: 'static>(
+        &self,
+    ) -> (crate::channel::WakeSender<T>, std::sync::mpsc::Receiver<T>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (
+            crate::channel::WakeSender::new(tx, Some(self.wake_handle())),
+            rx,
+        )
+    }
+
     // ── value constructors ──
 
     pub fn string(&self, s: &str) -> ZqValue<'cx> {
         let api = zapi_singleton();
         unsafe {
-                ZqValue::from_raw(self, (api.new_string_from_utf8)(self.env, s.as_ptr(), s.len()))
-            }
+            ZqValue::from_raw(
+                self,
+                (api.new_string_from_utf8)(self.env, s.as_ptr(), s.len()),
+            )
+        }
     }
 
     pub fn number(&self, n: f64) -> ZqValue<'cx> {
@@ -159,7 +221,10 @@ impl<'cx> ZqCtx<'cx> {
         };
         let ret = unsafe { (api.call_constructor)(self.env, &mut info) };
         if ret == api.value_exception {
-            Err(ZqError::new(ZqStatus::Exception, Some("call_constructor threw".into())))
+            Err(ZqError::new(
+                ZqStatus::Exception,
+                Some("call_constructor threw".into()),
+            ))
         } else {
             Ok(unsafe { ZqValue::from_raw(self, ret) })
         }
@@ -268,7 +333,10 @@ impl<'cx> ZqCtx<'cx> {
         };
         let ret = unsafe { (api.call_function)(self.env, &mut info) };
         if ret == api.value_exception {
-            Err(ZqError::new(ZqStatus::Exception, Some("call_function threw".into())))
+            Err(ZqError::new(
+                ZqStatus::Exception,
+                Some("call_function threw".into()),
+            ))
         } else {
             Ok(unsafe { ZqValue::from_raw(self, ret) })
         }
