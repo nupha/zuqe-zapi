@@ -3,10 +3,13 @@
 
 use std::marker::PhantomData;
 
+use std::os::raw::c_void;
+
 use crate::{
     __private::zapi_singleton,
-    ZqEnv, ZqError, ZqStatus, ZqType, ZqValue, ffi,
-    ffi::{ZqCallbackInfoS, ZqClassDef, ZqRawValue},
+    ffi,
+    ffi::{ZqCallbackInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue},
+    ZqEnv, ZqError, ZqStatus, ZqType, ZqValue,
 };
 
 /// Clonable, thread-safe handle to wake the JS event loop from any thread.
@@ -75,6 +78,89 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
+    /// Register a polling job: `job` runs once per event-loop tick until it
+    /// returns [`ZqPoll::Done`]. Return [`ZqPoll::Again`] to stay registered
+    /// (the loop parks until woken — pair with `make_wake_channel` /
+    /// `spawn_promise` so the wake actually arrives). Return
+    /// [`ZqPoll::AgainNoHold`] for fire-and-forget jobs that must not keep
+    /// the process alive.
+    ///
+    /// NOTE: the closure must not capture GC-managed JS values (no tracing
+    /// is provided for it). For jobs that need JS values in their state,
+    /// keep them behind a native payload or use the raw FFI with a trace.
+    pub fn add_polling_job<F>(&self, job: F)
+    where
+        F: FnMut(&mut ZqCtx<'_>) -> ZqPoll + 'static,
+    {
+        let trampoline: ZqJobRunFn = zq_poll_trampoline::<F>;
+        unsafe {
+            (zapi_singleton().add_polling_job)(
+                self.env,
+                trampoline,
+                None,
+                Box::into_raw(Box::new(job)) as *mut c_void,
+            );
+        }
+    }
+
+    /// High-level one-shot async: run `work` on a dedicated thread, deliver
+    /// its result to `convert` (JS thread) and settle the returned Promise.
+    ///
+    /// * `work` — the blocking/long computation; must not touch JS values.
+    /// * `convert` — runs on the JS thread; builds the JS value from the
+    ///   result. Return Err to reject the Promise.
+    /// If the work thread finishes without delivering (drop), the Promise
+    /// rejects with an internal error — forgetting to deliver cannot hang
+    /// the event loop.
+    pub fn spawn_promise<T, F, C>(&self, work: F, convert: C) -> Result<ZqValue<'cx>, ZqError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+        C: for<'a> FnOnce(&mut ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
+    {
+        let promise = unsafe { (zapi_singleton().new_promise)(self.env) };
+
+        let (tx, rx) = self.make_wake_channel::<T>();
+
+        std::thread::spawn(move || {
+            let t = work();
+            // WakingSender wakes the parked loop automatically.
+            let _ = tx.send(t);
+        });
+
+        let api = zapi_singleton();
+        let resolve_promise = api.promise_resolve;
+        let reject_promise = api.promise_reject;
+        let env = self.env;
+        let mut convert = Some(convert);
+
+        self.add_polling_job(move |cx| match rx.try_recv() {
+            Ok(t) => {
+                let c = convert
+                    .take()
+                    .expect("spawn_promise: convert consumed twice");
+                match c(cx, t) {
+                    Ok(v) => unsafe { resolve_promise(env, promise, v.raw()) },
+                    Err(e) => {
+                        let reason = cx.string(&e.to_string());
+                        unsafe { reject_promise(env, promise, reason.raw()) };
+                    }
+                }
+                ZqPoll::Done
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ZqPoll::Again,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // Worker ended without delivering — deterministic reject.
+                convert.take();
+                let reason = cx.string("async work dropped without a result");
+                unsafe { reject_promise(env, promise, reason.raw()) };
+                ZqPoll::Done
+            }
+        });
+
+        Ok(unsafe { ZqValue::from_raw(self, promise) })
+    }
+
     /// Create an unbounded channel whose sender wakes this event loop
     /// automatically on every send and on drop. Pair the receiver with a
     /// `queue_job` polling job: the worker's sends wake the parked loop, so
@@ -93,12 +179,7 @@ impl<'cx> ZqCtx<'cx> {
 
     pub fn string(&self, s: &str) -> ZqValue<'cx> {
         let api = zapi_singleton();
-        unsafe {
-            ZqValue::from_raw(
-                self,
-                (api.new_string_from_utf8)(self.env, s.as_ptr(), s.len()),
-            )
-        }
+        unsafe { ZqValue::from_raw(self, (api.new_string_utf8)(self.env, s.as_ptr(), s.len())) }
     }
 
     pub fn number(&self, n: f64) -> ZqValue<'cx> {
@@ -389,3 +470,33 @@ impl<'cx> Clone for ZqCtx<'cx> {
 }
 
 impl<'cx> Copy for ZqCtx<'cx> {}
+
+/// Return value of a [`ZqCtx::add_polling_job`] closure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZqPoll {
+    /// Job finished — the job is released.
+    Done,
+    /// Stay registered; run again on the next tick (the loop parks until
+    /// a wake arrives — pair with `make_wake_channel` / `spawn_promise`).
+    Again,
+    /// Like `Again`, but does not keep the process alive.
+    AgainNoHold,
+}
+
+/// Trampoline: host calls this per tick with the boxed closure.
+unsafe extern "C" fn zq_poll_trampoline<F>(data: *mut c_void, env: ZqEnv) -> i32
+where
+    F: FnMut(&mut ZqCtx<'_>) -> ZqPoll + 'static,
+{
+    let job = unsafe { &mut *(data as *mut F) };
+    let mut cx = unsafe { ZqCtx::from_raw(env) };
+    match job(&mut cx) {
+        // Done: the closure is consumed — free it (host does not free data).
+        ZqPoll::Done => unsafe {
+            drop(Box::from_raw(data as *mut F));
+            0
+        },
+        ZqPoll::Again => 1,
+        ZqPoll::AgainNoHold => 2,
+    }
+}

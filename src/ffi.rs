@@ -10,7 +10,7 @@ use std::ffi::{c_char, c_void};
 /// 不一致即拒绝加载，防止二进制不兼容的扩展跑在布局不符的 host 上。
 /// 递增时机：仅当**破坏布局**的改动（增删字段、改函数签名）对外发布时；
 /// 开发期保持恒定（host 与扩展同源编译，此校验只是兜底）。
-pub const ZQ_ABI_VERSION: u32 = 1;
+pub const ZQ_ABI_VERSION: u32 = 2;
 
 /// API（功能面）版本。
 ///
@@ -106,6 +106,16 @@ pub struct ZqWakeHandleS {
 
 /// `info.thrown` 再返回 `value_exception`，host 据此抛对应值。
 pub type ZapiBodyFn = unsafe extern "C" fn(env: ZqEnv, info: *mut ZqCallbackInfoS) -> ZqRawValue;
+
+/// `spawn_promise` work 闭包的 FFI 形态：在派生线程执行一次，返回
+/// `Box<T>` 的裸指针（T 为扩展自定义的结果类型）。`work_data` 由 work fn
+/// 消费后自行释放；不得包含 GC 管理的 JS 值。
+pub type ZqWorkFn = unsafe extern "C" fn(work_data: *mut c_void) -> *mut c_void;
+
+/// `spawn_promise` convert 闭包的 FFI 形态：在 JS 线程执行一次，把 work 的
+/// 结果 `Box<T>` 转成 JS 值（消费并释放 Box）。失败时抛异常并返回
+/// `value_exception`。
+pub type ZqConvertFn = unsafe extern "C" fn(env: ZqEnv, result: *mut c_void) -> ZqRawValue;
 
 /// `ZqFieldDef::value_fn` 签名：用 env 构建一个 JS 值，把 raw handle 写进 `*out`。
 /// 返回 0 成功、非 0 失败。仅用于 `ZQ_FIELD_VALUE`。
@@ -512,12 +522,42 @@ pub struct ZqApi {
     // ── 版本校验 ──
     pub version: u32,
 
+    // ── host-provided constant value handles ──
+    // Fixed JS values the host precomputes once. They are plain constants, so
+    // extensions read them directly from the table instead of calling an FFI
+    // function (`undefined`/`null`/`true`/`false` have no `*_raw` fn at all).
+    // The engine-internal sentinels (`exception`, `uninitialized`) are *not*
+    // exposed: returning them to JS would corrupt the trampoline.
+    /// The `undefined` value handle.
+    pub value_undefined: ZqRawValue,
+    /// The `null` value handle.
+    pub value_null: ZqRawValue,
+    /// The boolean `true` value handle.
+    pub value_true: ZqRawValue,
+    /// The boolean `false` value handle.
+    pub value_false: ZqRawValue,
+    /// The `NaN` number value handle.
+    pub value_nan: ZqRawValue,
+    /// The integer `0` number value handle (`+0`; the `-0` float is distinct).
+    pub value_zero: ZqRawValue,
+    /// The integer `1` number value handle.
+    pub value_one: ZqRawValue,
+    /// The integer `-1` number value handle.
+    pub value_negative_one: ZqRawValue,
+    /// The `+Infinity` number value handle.
+    pub value_infinity: ZqRawValue,
+    /// The `-Infinity` number value handle.
+    pub value_minus_infinity: ZqRawValue,
+    /// The **exception sentinel** (`JS_EXCEPTION` style): a `body` returns this
+    /// handle to signal an error instead of a result value. It is not a value
+    /// the extension should hand to JS.
+    pub value_exception: ZqRawValue,
+
     pub new_number: unsafe extern "C" fn(env: ZqEnv, v: f64) -> ZqRawValue,
     /// 从 **UTF-8 编码的字节** 构造 JS 字符串（`ptr`/`len` 指向的字节必须是合法
     /// UTF-8；host 不校验，非法序列按引擎策略处理）。与 `get_string_utf8`
     /// 配对：读出是 UTF-8，写入也是 UTF-8。失败返回 `value_exception`。
-    pub new_string_from_utf8:
-        unsafe extern "C" fn(env: ZqEnv, ptr: *const u8, len: usize) -> ZqRawValue,
+    pub new_string_utf8: unsafe extern "C" fn(env: ZqEnv, ptr: *const u8, len: usize) -> ZqRawValue,
     pub new_symbol: unsafe extern "C" fn(env: ZqEnv, desc: ZqRawValue) -> ZqRawValue,
     pub new_object: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
     pub new_array: unsafe extern "C" fn(env: ZqEnv, len: usize) -> ZqRawValue,
@@ -601,12 +641,21 @@ pub struct ZqApi {
     /// pattern): `run(data)` executes once per tick until it returns Done or
     /// an error. Use it to pump results from an OS worker thread into JS by
     /// calling back with `call_function`.
-    pub queue_job: unsafe extern "C" fn(
+    pub add_polling_job: unsafe extern "C" fn(
         env: ZqEnv,
         run: ZqJobRunFn,
         trace: Option<ZqJobTraceFn>,
         data: *mut c_void,
     ) -> i32,
+
+    // ── promise primitives (JS thread only) ──
+    /// Create a pending Promise. GC-rooted until settled, so the raw handle
+    /// may be held (e.g. inside a polling job's data) across ticks.
+    pub new_promise: unsafe extern "C" fn(env: ZqEnv) -> ZqRawValue,
+    /// Settle fulfilled. Double-settle is a silent no-op.
+    pub promise_resolve: unsafe extern "C" fn(env: ZqEnv, promise: ZqRawValue, value: ZqRawValue),
+    /// Settle rejected. Double-settle is a silent no-op.
+    pub promise_reject: unsafe extern "C" fn(env: ZqEnv, promise: ZqRawValue, reason: ZqRawValue),
 
     // ── exception hygiene ──
     /// Take the pending exception and return its raw handle
@@ -628,35 +677,4 @@ pub struct ZqApi {
     pub wake_handle_new: unsafe extern "C" fn(env: ZqEnv) -> *mut ZqWakeHandleS,
     pub wake_handle_wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
     pub wake_handle_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
-
-    // ── host-provided constant value handles ──
-    // Fixed JS values the host precomputes once. They are plain constants, so
-    // extensions read them directly from the table instead of calling an FFI
-    // function (`undefined`/`null`/`true`/`false` have no `*_raw` fn at all).
-    // The engine-internal sentinels (`exception`, `uninitialized`) are *not*
-    // exposed: returning them to JS would corrupt the trampoline.
-    /// The `undefined` value handle.
-    pub value_undefined: ZqRawValue,
-    /// The `null` value handle.
-    pub value_null: ZqRawValue,
-    /// The boolean `true` value handle.
-    pub value_true: ZqRawValue,
-    /// The boolean `false` value handle.
-    pub value_false: ZqRawValue,
-    /// The `NaN` number value handle.
-    pub value_nan: ZqRawValue,
-    /// The integer `0` number value handle (`+0`; the `-0` float is distinct).
-    pub value_zero: ZqRawValue,
-    /// The integer `1` number value handle.
-    pub value_one: ZqRawValue,
-    /// The integer `-1` number value handle.
-    pub value_negative_one: ZqRawValue,
-    /// The `+Infinity` number value handle.
-    pub value_infinity: ZqRawValue,
-    /// The `-Infinity` number value handle.
-    pub value_minus_infinity: ZqRawValue,
-    /// The **exception sentinel** (`JS_EXCEPTION` style): a `body` returns this
-    /// handle to signal an error instead of a result value. It is not a value
-    /// the extension should hand to JS.
-    pub value_exception: ZqRawValue,
 }
