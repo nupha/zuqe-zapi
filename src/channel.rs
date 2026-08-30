@@ -25,14 +25,14 @@ use crate::ctx::ZqWakeHandle;
 /// [`WakeSender::wrap`] around an existing crossbeam sender.
 pub struct WakeSender<T> {
     tx: Sender<T>,
-    wake: Option<ZqWakeHandle>,
+    waker: Option<ZqWakeHandle>,
 }
 
 impl<T> Clone for WakeSender<T> {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
-            wake: self.wake.clone(),
+            waker: self.waker.clone(),
         }
     }
 }
@@ -40,7 +40,7 @@ impl<T> Clone for WakeSender<T> {
 impl<T> std::fmt::Debug for WakeSender<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WakeSender")
-            .field("has_wake", &self.wake.is_some())
+            .field("has_wake", &self.waker.is_some())
             .finish()
     }
 }
@@ -48,16 +48,12 @@ impl<T> std::fmt::Debug for WakeSender<T> {
 impl<T> WakeSender<T> {
     /// Attach a wake handle to an existing raw sender. `None` disables
     /// waking (plain passthrough).
-    pub fn wrap(tx: Sender<T>, wake: Option<ZqWakeHandle>) -> Self {
-        Self { tx, wake }
-    }
-
-    pub(crate) fn new(tx: Sender<T>, wake: Option<ZqWakeHandle>) -> Self {
-        Self { tx, wake }
+    pub fn new(tx: Sender<T>, waker: Option<ZqWakeHandle>) -> Self {
+        Self { tx, waker }
     }
 
     /// The underlying raw sender, for paths that must not wake.
-    pub fn raw(&self) -> &Sender<T> {
+    pub fn tx(&self) -> &Sender<T> {
         &self.tx
     }
 
@@ -66,7 +62,7 @@ impl<T> WakeSender<T> {
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let r = self.tx.send(value);
         if r.is_ok() {
-            if let Some(w) = &self.wake {
+            if let Some(w) = &self.waker {
                 w.wake();
             }
         }
@@ -78,7 +74,7 @@ impl<T> Drop for WakeSender<T> {
     fn drop(&mut self) {
         // Sender gone: a `Disconnected` can only be discovered by the next
         // poll — wake the parked loop so it happens now.
-        if let Some(w) = &self.wake {
+        if let Some(w) = &self.waker {
             w.wake();
         }
     }
