@@ -3,29 +3,23 @@
 
 use std::ffi::{c_char, c_void};
 
-/// ABI (binary layout) contract version.
+/// ABI (binary layout) contract version (high 16 bits of `ZqModuleInfo.version`).
 ///
 /// Meaning: memory layout and function pointer signatures of the `ZqApi` table
 /// and all `Zq*S` structs.
-/// Usage: extensions verify `api.version == ZQ_ABI_VERSION` in `zq_module_register`;
-/// mismatched versions are rejected to prevent binary-incompatible extensions
-/// from loading on hosts with different layouts.
-/// Bump only when layout-breaking changes (added/removed fields, changed function
-/// signatures) are released externally; stays constant during development (host
-/// and extensions compile from the same source, so this check is a safety net).
-pub const ZQ_ABI_VERSION: u32 = 2;
+/// Usage: the host rejects extensions whose ABI version differs from its own.
+/// Bump only when layout-breaking changes are released externally.
+pub const ZQ_ABI_VERSION: u16 = 1;
 
-/// API (feature) version.
+/// API (feature) version (low 16 bits of `ZqModuleInfo.version`).
 ///
 /// Meaning: capability tier provided by the `ZqApi` table, independent of binary layout.
-/// Usage: extensions declare the minimum API tier they require in
-/// `ZqModuleInfo.min_api_version`; the host loads the extension only if its own
-/// API version ≥ the required tier.
-/// Bump only when **new** API capabilities are added (backward-compatible,
-/// append-only); breaking changes belong to ABI versioning via `ZQ_ABI_VERSION`.
-///
-/// Currently both are 1: development phase, no external releases.
-pub const ZQ_API_VERSION: u32 = 1;
+/// Usage: the host rejects extensions whose required API tier exceeds its own.
+/// Bump only when new API capabilities are added (backward-compatible, append-only).
+pub const ZQ_API_VERSION: u16 = 1;
+
+/// Pack ABI and API versions into a single u32: high 16 bits = ABI, low 16 bits = API.
+pub const ZQ_VERSION_PACKED: u32 = ((ZQ_ABI_VERSION as u32) << 16) | (ZQ_API_VERSION as u32);
 
 // ── ZqFieldDef kinds (mirror zuqe `FieldDetail`) ──
 
@@ -148,8 +142,8 @@ pub type ZqJobTraceFn = unsafe extern "C" fn(data: *mut c_void, gcx: *mut ZqGcTr
 #[repr(C)]
 pub struct ZqEnvS {
     pub ctx: *mut c_void,
-    pub(crate) rt: *mut c_void,
-    pub(crate) trace: *mut ZqGcTraceCtxS,
+    #[deprecated]
+    pub rt: *mut c_void,
 }
 
 /// GC trace context, used by class payload's `trace` callback.
@@ -482,11 +476,15 @@ pub struct ZqModuleInfo {
     /// Module name (purely decorative; host identity is determined by dylib URL).
     pub name: *const c_char,
     pub struct_size: u32,
-    pub abi_version: u32,
-    pub min_api_version: u32,
+
+    /// Packed version: high 16 bits = ABI version, low 16 bits = API version.
+    /// Use `ZQ_VERSION_PACKED` to build, `abi_version()` / `api_version()` to read.
+    pub version: u32,
+
     /// Export field array (`ZqFieldDef`, valid for the process lifetime).
     pub exports: *const ZqFieldDef,
     pub exports_len: usize,
+
     /// Module load initialization hook (called at evaluation time with env;
     /// non-0 = failure).
     pub init: Option<unsafe extern "C" fn(env: ZqEnv) -> i32>,
@@ -499,6 +497,16 @@ pub struct ZqModuleInfo {
 }
 
 impl ZqModuleInfo {
+    /// ABI version from packed `version` field (high 16 bits).
+    pub const fn abi_version(&self) -> u16 {
+        (self.version >> 16) as u16
+    }
+
+    /// API version from packed `version` field (low 16 bits).
+    pub const fn api_version(&self) -> u16 {
+        (self.version & 0xFFFF) as u16
+    }
+
     pub fn exports(&self) -> &[ZqFieldDef] {
         if self.exports.is_null() {
             &[]
@@ -532,8 +540,6 @@ impl ZqModuleInfo {
 /// via `*mut ZqApi`.
 #[repr(C)]
 pub struct ZqApi {
-    pub version: u32,
-
     // ── host-provided constant value handles ──
     // Fixed JS values the host precomputes once. They are plain constants, so
     // extensions read them directly from the table instead of calling an FFI

@@ -7,7 +7,6 @@ pub mod ctx;
 pub mod error;
 pub mod ffi;
 pub mod gc;
-pub mod prelude;
 pub mod traits;
 pub mod value;
 

@@ -4,15 +4,16 @@ use std::cell::Cell;
 use std::ffi::{CStr, c_char};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-pub use crate::ctx::ZqCtx;
-pub use crate::error::ZqError;
-pub use crate::ffi::{
-    ZQ_ABI_VERSION, ZQ_API_VERSION, ZqApi, ZqCallbackInfoS, ZqClassDef, ZqEnv, ZqEnvS, ZqFieldDef,
-    ZqFieldValueFn, ZqModuleInfo, ZqRawValue,
+pub use crate::{
+    ctx::ZqCtx,
+    error::ZqError,
+    ffi::{
+        ZQ_VERSION_PACKED, ZqApi, ZqCallbackInfoS, ZqClassDef, ZqEnv, ZqEnvS, ZqFieldDef,
+        ZqFieldValueFn, ZqModuleInfo, ZqRawValue,
+    },
+    traits::{FromZqValue, IntoZqValue},
+    value::ZqValue,
 };
-pub use crate::traits::{FromZqValue, IntoZqValue};
-pub use crate::value::ZqValue;
-pub use std::mem::size_of;
 
 /// C-compatible callback function pointer (ABI-compatible with ZqApi body functions).
 /// Returns the JS result value, or `value_exception` on error.

@@ -6,7 +6,7 @@ use std::{marker::PhantomData, os::raw::c_void};
 use crate::{
     __private::zapi_singleton,
     ZqEnv, ZqError, ZqStatus, ZqType, ZqValue,
-    ffi::{self, ZqCallbackInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue},
+    ffi::{ZqCallbackInfoS, ZqClassDef, ZqEnvS, ZqJobRunFn, ZqRawValue, ZqWakeHandleS},
 };
 
 /// Clonable, thread-safe handle to wake the JS event loop from any thread.
@@ -18,11 +18,11 @@ use crate::{
 /// event happens to fire.
 #[derive(Debug, Clone)]
 pub struct ZqWakeHandle {
-    raw: *mut ffi::ZqWakeHandleS,
+    raw: *mut ZqWakeHandleS,
     /// Captured at creation (on the JS thread): `zapi_singleton()` is
     /// thread-local, so `wake()` from worker threads must not touch it.
-    wake_fn: unsafe extern "C" fn(*mut ffi::ZqWakeHandleS),
-    free_fn: unsafe extern "C" fn(*mut ffi::ZqWakeHandleS),
+    wake_fn: unsafe extern "C" fn(*mut ZqWakeHandleS),
+    free_fn: unsafe extern "C" fn(*mut ZqWakeHandleS),
 }
 
 unsafe impl Send for ZqWakeHandle {}
@@ -45,7 +45,7 @@ impl Drop for ZqWakeHandle {
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct ZqCtx<'cx> {
-    pub(crate) env: ZqEnv,
+    pub(crate) env: *mut ZqEnvS,
     _marker: PhantomData<&'cx ()>,
 }
 
@@ -266,18 +266,12 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
+    #[deprecated]
     pub fn rt(&self) -> *mut std::ffi::c_void {
         if self.env.is_null() {
             return std::ptr::null_mut();
         }
         unsafe { (*self.env).rt }
-    }
-
-    pub fn trace_ctx(&self) -> *mut crate::ffi::ZqGcTraceCtxS {
-        if self.env.is_null() {
-            return std::ptr::null_mut();
-        }
-        unsafe { (*self.env).trace }
     }
 
     // ── class / instance helpers (requires GLOBAL_API) ──
