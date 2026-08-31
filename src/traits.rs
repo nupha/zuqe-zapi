@@ -3,16 +3,17 @@
 
 use crate::{ZqCtx, ZqError, ZqValue, ffi::ZqRawValue};
 
-/// 从 JS 值解包为 Rust 类型。
+/// Unwrap a JS value into a Rust type.
 ///
-/// 用于 `#[zq_function]` 参数解包。失败时应调用 `throw_type_error` 并返回 `Err`。
+/// Used by `#[zq_function]` parameter unpacking. On failure, call
+/// `throw_type_error` and return `Err`.
 pub trait FromZqValue<'cx>: Sized {
     fn from_zq_value(cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError>;
 }
 
-/// 将 Rust 类型转换为 JS 值。
+/// Convert a Rust type into a JS value.
 ///
-/// 用于 `#[zq_function]` 返回值转换。
+/// Used by `#[zq_function]` return value conversion.
 pub trait IntoZqValue<'cx> {
     fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx>;
 }
@@ -81,7 +82,7 @@ impl<'cx> IntoZqValue<'cx> for ZqValue<'cx> {
 
 impl<'cx> IntoZqValue<'cx> for ZqRawValue {
     fn into_zq_value(self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
-        unsafe { ZqValue::from_raw(cx, self) }
+        ZqValue::from(self)
     }
 }
 

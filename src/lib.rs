@@ -17,7 +17,7 @@ pub mod __private;
 
 pub use {
     __private::module_path,
-    channel::WakeSender,
+    channel::ZqWakeSender,
     class::Class,
     ctx::{ZqCtx, ZqWakeHandle},
     error::{ZqError, ZqStatus},

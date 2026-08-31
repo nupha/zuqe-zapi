@@ -10,19 +10,19 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
 pub struct ZqGcTraceCtx {
     raw: *mut ZqGcTraceCtxS,
 }
 
-impl ZqGcTraceCtx {
-    /// Wraps the `trace_ctx` pointer handed to a class `gc_trace` callback.
-    ///
-    /// # Safety
-    /// `raw` must be the trace context received by a `ZqClassDef.gc_trace` callback.
-    pub unsafe fn from_raw(raw: *mut ZqGcTraceCtxS) -> Self {
+impl From<*mut ZqGcTraceCtxS> for ZqGcTraceCtx {
+    #[inline(always)]
+    fn from(raw: *mut ZqGcTraceCtxS) -> Self {
         Self { raw }
     }
+}
 
+impl ZqGcTraceCtx {
     pub fn raw(&self) -> *mut ZqGcTraceCtxS {
         self.raw
     }
@@ -30,11 +30,11 @@ impl ZqGcTraceCtx {
     /// Reports `val` to the GC so its graph stays reachable during tracing.
     pub fn mark(&self, val: ZqRawValue) -> Result<(), ZqError> {
         let api = zapi_singleton();
-        let r = unsafe { (api.gc_add_trace)(std::ptr::null_mut(), self.raw, val) };
+        let r = unsafe { (api.gc_mark)(self.raw, val) };
         if r < 0 {
             Err(ZqError::new(
                 ZqStatus::Error,
-                Some("gc_add_trace failed".into()),
+                Some("gc_mark failed".into()),
             ))
         } else {
             Ok(())
@@ -47,30 +47,28 @@ pub trait ZqGcTrace {
 }
 
 impl ZqGcTrace for () {
-    fn trace(&self, _ctx: &mut ZqGcTraceCtx) {}
+    fn trace(&self, _: &mut ZqGcTraceCtx) {}
 }
 impl ZqGcTrace for i32 {
-    fn trace(&self, _ctx: &mut ZqGcTraceCtx) {}
+    fn trace(&self, _: &mut ZqGcTraceCtx) {}
 }
 impl ZqGcTrace for i64 {
-    fn trace(&self, _ctx: &mut ZqGcTraceCtx) {}
+    fn trace(&self, _: &mut ZqGcTraceCtx) {}
 }
 impl ZqGcTrace for f64 {
-    fn trace(&self, _ctx: &mut ZqGcTraceCtx) {}
+    fn trace(&self, _: &mut ZqGcTraceCtx) {}
 }
 impl ZqGcTrace for bool {
-    fn trace(&self, _ctx: &mut ZqGcTraceCtx) {}
+    fn trace(&self, _: &mut ZqGcTraceCtx) {}
 }
 impl ZqGcTrace for String {
-    fn trace(&self, _ctx: &mut ZqGcTraceCtx) {}
+    fn trace(&self, _: &mut ZqGcTraceCtx) {}
 }
 
 impl ZqGcTrace for ZqRawValue {
-    fn trace(&self, ctx: &mut ZqGcTraceCtx) {
-        // 0 (undefined) holds no reachable graph.
-        if *self != 0 {
-            let _ = ctx.mark(*self);
-        }
+    #[inline(always)]
+    fn trace(&self, gcx: &mut ZqGcTraceCtx) {
+        let _ = gcx.mark(*self);
     }
 }
 
