@@ -132,7 +132,7 @@ pub type ZqGcTraceFn = unsafe extern "C" fn(trace_ctx: *mut ZqGcTraceCtxS, opaqu
 
 // ── job queue (cross-thread async bridge) ──
 /// Job run callback. Runs on the JS thread once per event-loop tick.
-/// Returns: 0 = Done, 1 = Again (re-queue next tick), 2 = AgainNoHold
+/// Returns: 0 = Done, 1 = Block (re-queue next tick), 2 = Continue
 /// (re-queue without keeping the process alive), <0 = error (treated as Done).
 pub type ZqJobRunFn = unsafe extern "C" fn(data: *mut c_void, env: ZqEnv) -> i32;
 /// Optional GC trace for JS values held inside `data`.
