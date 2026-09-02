@@ -199,7 +199,7 @@ impl<'cx> ZqValue<'cx> {
         Ok(())
     }
 
-    pub fn payload_mut<T: 'static>(&self, cx: &ZqCtx<'cx>) -> Option<&mut T> {
+    pub fn payload_mut<T: 'static>(&mut self, cx: &ZqCtx<'cx>) -> Option<&mut T> {
         let p = cx.get_native_ptr(*self);
         if p.is_null() {
             None

@@ -249,13 +249,21 @@ impl<'cx> ZqCtx<'cx> {
     /// GC and should `mark()` every such value via `ZqGcTraceCtx`.
     ///
     /// Typically called from the module `init` hook.
+    ///
+    /// # Safety
+    ///
+    /// `opaque` must point to valid extension state for the lifetime of the
+    /// registration, and `cb` must be a valid function pointer that can safely
+    /// access that state. The callback must not panic or perform any operation
+    /// that could invalidate the JS heap while tracing is active.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn set_gc_trace_func(
         &self,
-        cb: Option<crate::ffi::ZqGcTraceFn>,
+        func: Option<crate::ffi::ZqGcTraceFn>,
         opaque: *mut std::ffi::c_void,
     ) -> Result<(), ZqError> {
         let api = zapi_singleton();
-        let r = unsafe { (api.set_gc_trace_func)(self.env, cb, opaque) };
+        let r = unsafe { (api.set_gc_trace_func)(self.env, func, opaque) };
         if r < 0 {
             Err(ZqError::new(
                 ZqStatus::Error,
@@ -289,6 +297,7 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new_instance(
         &self,
         def: &ZqClassDef,
@@ -385,6 +394,7 @@ impl<'cx> ZqCtx<'cx> {
     /// * `work` — the blocking/long computation; must not touch JS values.
     /// * `convert` — runs on the JS thread; builds the JS value from the
     ///   result. Return Err to reject the Promise.
+    ///
     /// If the work thread finishes without delivering (drop), the Promise
     /// rejects with an internal error — forgetting to deliver cannot hang
     /// the event loop.
