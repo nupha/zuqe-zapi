@@ -694,7 +694,7 @@ pub struct ZqApi {
 
     /// Create a callable JS function backed by a Rust callback. `run_fn` is
     /// invoked each time the function is called.
-    pub new_callable: unsafe extern "C" fn(
+    pub new_native_function: unsafe extern "C" fn(
         env: ZqEnv,
         run_fn: ZqBodyFn,
         name: ZqRawValue,
