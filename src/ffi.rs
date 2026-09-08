@@ -105,7 +105,7 @@ pub struct ZqWakeHandleS {
 }
 
 /// `info.thrown`, then return `value_exception` so the host throws the corresponding value.
-pub type ZapiBodyFn = unsafe extern "C" fn(env: ZqEnv, info: *mut ZqCallbackInfoS) -> ZqRawValue;
+pub type ZqBodyFn = unsafe extern "C" fn(env: ZqEnv, cc: *mut ZqCallbackInfoS) -> ZqRawValue;
 
 /// FFI form of the `spawn_promise` work closure: executes once on a spawned
 /// thread, returns a raw pointer to `Box<T>` (T is the extension-defined result
@@ -128,7 +128,7 @@ pub type ZqFieldValueFn = unsafe extern "C" fn(env: ZqEnv, out: *mut ZqRawValue)
 /// cycle to inform the GC about JS values held in native storage (thread_local,
 /// etc.) via `ZqGcTraceCtx::mark`. Same signature as the class payload
 /// `ZqClassDef.gc_trace`, registered via `set_gc_trace_func`.
-pub type ZqGcTraceFn = unsafe extern "C" fn(trace_ctx: *mut ZqGcTraceCtxS, opaque: *mut c_void);
+pub type ZqGcTraceFn = unsafe extern "C" fn(gcx: *mut ZqGcTraceCtxS, target: *mut c_void);
 
 // ── job queue (cross-thread async bridge) ──
 /// Job run callback. Runs on the JS thread once per event-loop tick.
@@ -138,6 +138,14 @@ pub type ZqJobRunFn = unsafe extern "C" fn(data: *mut c_void, env: ZqEnv) -> i32
 /// Optional GC trace for JS values held inside `data`.
 pub type ZqJobTraceFn = unsafe extern "C" fn(data: *mut c_void, gcx: *mut ZqGcTraceCtxS);
 
+// ── async iterator fetch callback (new in API v2) ──
+/// FFI callback for `new_async_iterator`. Called on the JS thread to produce
+/// the next value. Returns:
+///   - A normal ZqRawValue → yield it (done = false)
+///   - `value_undefined` → iteration complete (done = true)
+///   - `value_exception` → reject the promise
+pub type ZqAsyncIterFetchFn = unsafe extern "C" fn(env: ZqEnv, data: *mut c_void) -> ZqRawValue;
+
 /// A wrap of rt, ctx and gc tracer
 #[repr(C)]
 pub struct ZqEnvS {
@@ -146,11 +154,16 @@ pub struct ZqEnvS {
     pub rt: *mut c_void,
 }
 
-/// GC trace context, used by class payload's `trace` callback.
+/// GC trace context — an opaque FFI handle for calling `gc_mark`.
 ///
-/// Populated by the host with a pointer to its internal GC trace context;
-/// the extension side informs the GC about held JS values via
-/// `api.gc_mark(trace_ctx, value)`.
+/// When the host invokes a trace callback, the first argument (`*mut ZqGcTraceCtxS`)
+/// is **the host's `&mut gc_lite::GcTraceCtx` transmuted** (see `zapi_gc_trace_bridge`
+/// in the host). The two types are layout-compatible by construction: the host
+/// transmutes `&mut GcTraceCtx → *mut ZqGcTraceCtxS` before calling the callback,
+/// and the extension can reverse the transmute to call `ZqGcTraceCtx::mark()`.
+///
+/// Do **not** store this pointer across ticks — it is only valid during the
+/// callback that receives it.
 #[repr(C)]
 pub struct ZqGcTraceCtxS([u8; 0]);
 
@@ -209,11 +222,11 @@ pub struct ZqFieldDef {
 
     // ── behavior slots ──
     /// FUNC: method/function body.
-    pub body: Option<ZapiBodyFn>,
+    pub body: Option<ZqBodyFn>,
     /// GETSET：getter。
-    pub get: Option<ZapiBodyFn>,
+    pub get: Option<ZqBodyFn>,
     /// GETSET：setter。
-    pub set: Option<ZapiBodyFn>,
+    pub set: Option<ZqBodyFn>,
     /// CLASS: class definition (host registers and publishes the constructor).
     pub class_def: *const ZqClassDef,
     /// VALUE: lazy value builder (called at evaluation time with env, writes `*out`).
@@ -234,7 +247,7 @@ unsafe impl Sync for ZqFieldDef {}
 
 impl ZqFieldDef {
     /// Method (`FieldDef::FUNC` semantics).
-    pub const fn func(name: *const c_char, body: ZapiBodyFn, arity: u8, magic: i32) -> Self {
+    pub const fn func(name: *const c_char, body: ZqBodyFn, arity: u8, magic: i32) -> Self {
         Self {
             name,
             kind: ZQ_FIELD_FUNC,
@@ -256,8 +269,8 @@ impl ZqFieldDef {
     /// Accessor (`FieldDef::GETSET` semantics). At least one of get/set must be `Some`.
     pub const fn getset(
         name: *const c_char,
-        get: Option<ZapiBodyFn>,
-        set: Option<ZapiBodyFn>,
+        get: Option<ZqBodyFn>,
+        set: Option<ZqBodyFn>,
         magic: i32,
     ) -> Self {
         Self {
@@ -678,6 +691,28 @@ pub struct ZqApi {
         trace_fn: Option<ZqJobTraceFn>,
         data: *mut c_void,
     ) -> i32,
+
+    /// Create a callable JS function backed by a Rust callback. `run_fn` is
+    /// invoked each time the function is called.
+    pub new_callable: unsafe extern "C" fn(
+        env: ZqEnv,
+        run_fn: ZqBodyFn,
+        name: ZqRawValue,
+        magic: i32,
+    ) -> ZqRawValue,
+
+    /// Create an async iterable iterator. `fetch_fn` is called on the JS
+    /// thread to produce each value. Returns `value_undefined` when done,
+    /// `value_exception` on error. The iterator implements the async iterator
+    /// protocol (`for await...of`). `opaque` is the Rust payload passed to
+    /// `fetch_fn` on each call; managed via `trace_fn`/`drop_fn`.
+    pub new_async_iterator: unsafe extern "C" fn(
+        env: ZqEnv,
+        fetch_fn: ZqAsyncIterFetchFn,
+        trace_fn: Option<ZqGcTraceFn>,
+        drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+        opaque: *mut c_void,
+    ) -> ZqRawValue,
 
     // ── promise primitives (JS thread only) ──
     /// Create a pending Promise. GC-rooted until settled, so the raw handle
