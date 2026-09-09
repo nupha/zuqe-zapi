@@ -23,7 +23,7 @@ pub use {
     error::{ZqError, ZqStatus},
     ffi::{ZqEnv, ZqFieldDef, ZqRawValue, ZqType},
     gc::{ZqGcTrace, ZqGcTraceCtx},
-    iter::ZqAsyncIterable,
+    iter::{AsyncIterResult, ZqAsyncIterable},
     traits::{FromZqValue, IntoZqValue},
     value::{ZqCallInfo, ZqValue},
 };

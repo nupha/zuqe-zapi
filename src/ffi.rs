@@ -140,11 +140,13 @@ pub type ZqJobTraceFn = unsafe extern "C" fn(data: *mut c_void, gcx: *mut ZqGcTr
 
 // ── async iterator fetch callback (new in API v2) ──
 /// FFI callback for `new_async_iterator`. Called on the JS thread to produce
-/// the next value. Returns:
-///   - A normal ZqRawValue → yield it (done = false)
-///   - `value_undefined` → iteration complete (done = true)
-///   - `value_exception` → reject the promise
-pub type ZqAsyncIterFetchFn = unsafe extern "C" fn(env: ZqEnv, data: *mut c_void) -> ZqRawValue;
+/// the next value. Returns status code:
+///   - 0 = Value ready (written to `*ret_val`)
+///   - 1 = Done (iteration complete)
+///   - 2 = Wait (value not ready, retry next tick)
+///   - -1 = Error (reject the promise)
+pub type ZqAsyncIterFetchFn =
+    unsafe extern "C" fn(env: ZqEnv, opaque: *mut c_void, ret_val: *mut ZqRawValue) -> i32;
 
 /// A wrap of rt, ctx and gc tracer
 #[repr(C)]
