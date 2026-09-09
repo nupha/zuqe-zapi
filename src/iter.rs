@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use crate::{__private::zapi_singleton, ZqCtx, ZqEnv, ZqError, ZqRawValue, ZqValue};
 
 pub trait ZqAsyncIterable {
-    fn fetch<'a>(&'a mut self, ctx: ZqCtx<'a>) -> Result<Option<ZqValue<'a>>, ZqError>;
+    fn next<'a>(&'a mut self, ctx: ZqCtx<'a>) -> Result<Option<ZqValue<'a>>, ZqError>;
 }
 
 impl<'cx> ZqCtx<'cx> {
@@ -15,7 +15,7 @@ impl<'cx> ZqCtx<'cx> {
             let ctx = ZqCtx::from_raw(env);
             let iter = unsafe { &mut *(opaque as *mut T) };
 
-            match iter.fetch(ctx) {
+            match iter.next(ctx) {
                 Ok(Some(val)) => val.raw(),
                 Ok(None) => ctx.undefined().raw(),
                 Err(e) => {
