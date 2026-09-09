@@ -57,32 +57,6 @@ impl<'cx> Clone for ZqCtx<'cx> {
 }
 impl<'cx> Copy for ZqCtx<'cx> {}
 
-/// Trampoline for `new_async_iterator` fetch callback.
-/// Uses `&mut` reference — the callback is `FnMut` (called once per row).
-/// The Box is freed by `zapi_fetch_drop` when the iterator is GC'd.
-unsafe extern "C" fn zapi_fetch_trampoline<F>(env: ZqEnv, func_ptr: *mut c_void) -> ZqRawValue
-where
-    F: for<'a> FnMut(&mut ZqCtx<'a>) -> Result<Option<ZqValue<'a>>, ZqError> + 'static,
-{
-    let fetch_fn = &mut *(func_ptr as *mut F);
-    let mut ctx = ZqCtx::from_raw(env);
-    match fetch_fn(&mut ctx) {
-        Ok(Some(val)) => val.raw(),
-        Ok(None) => ctx.undefined().raw(),
-        Err(e) => {
-            let _ = ctx.throw_error(&e);
-            zapi_singleton().value_exception
-        }
-    }
-}
-
-/// Drop function for the fetch callback Box stored as opaque data.
-unsafe extern "C" fn zapi_fetch_drop<F>(data: *mut c_void) {
-    unsafe {
-        drop(Box::from_raw(data as *mut F));
-    }
-}
-
 impl<'cx> ZqCtx<'cx> {
     #[inline(always)]
     pub fn from_raw(env: ZqEnv) -> Self {
@@ -121,7 +95,7 @@ impl<'cx> ZqCtx<'cx> {
     /// keep them behind a native payload or use the raw FFI with a trace.
     pub fn add_polling_job<F>(&self, job: F)
     where
-        F: FnMut(&mut ZqCtx<'_>) -> ZqPoll + 'static,
+        F: FnMut(ZqCtx<'_>) -> ZqPoll + 'static,
     {
         let trampoline: ZqJobRunFn = zq_poll_trampoline::<F>;
         unsafe {
@@ -414,43 +388,6 @@ impl<'cx> ZqCtx<'cx> {
         ZqValue::from(unsafe { (api.take_exception)(self.env) })
     }
 
-    /// Create an async iterable iterator backed by a Rust fetch callback.
-    ///
-    /// Returns a proper `AsyncIterableIterator` that implements the async
-    /// iterator protocol (`for await...of`). The `fetch_fn` callback is
-    /// invoked on the JS thread to produce each value.
-    ///
-    /// Callback convention (matches `AsyncIteratorFetcher`):
-    /// - Return a normal value → yield `{value, done: false}`
-    /// - Return `value_undefined` → done (iteration complete)
-    /// - Return `value_exception` → reject the promise
-    pub fn new_async_iterator<F>(&self, fetch_fn: F) -> Result<ZqValue<'cx>, ZqError>
-    where
-        F: for<'a> FnMut(&mut ZqCtx<'a>) -> Result<Option<ZqValue<'a>>, ZqError> + 'static,
-    {
-        let api = zapi_singleton();
-
-        // We need to store the closure in a way that the FFI callback can access it.
-        // Store it as a Box<F> cast to opaque pointer, same pattern as add_polling_job.
-        let boxed = Box::new(fetch_fn);
-        let data_ptr = Box::into_raw(boxed) as *mut c_void;
-
-        let raw = unsafe {
-            (api.new_async_iterator)(
-                self.env,
-                zapi_fetch_trampoline::<F>,
-                None,                       // trace_fn: the closure doesn't hold JS values
-                Some(zapi_fetch_drop::<F>), // drop_fn: free the Box when iterator is GC'd
-                data_ptr,
-            )
-        };
-        if raw == api.value_exception {
-            Err(ZqError::type_error("new_async_iterator failed"))
-        } else {
-            Ok(ZqValue::from(raw))
-        }
-    }
-
     /// High-level one-shot async: run `work` on a dedicated thread, deliver
     /// its result to `convert` (JS thread) and settle the returned Promise.
     ///
@@ -472,7 +409,7 @@ impl<'cx> ZqCtx<'cx> {
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
-        C: for<'a> FnOnce(&mut ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
+        C: for<'a> FnOnce(ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
     {
         let api = zapi_singleton();
 
@@ -534,12 +471,12 @@ pub enum ZqPoll {
 /// Trampoline: host calls this per tick with the boxed closure.
 unsafe extern "C" fn zq_poll_trampoline<F>(data: *mut c_void, env: ZqEnv) -> i32
 where
-    F: FnMut(&mut ZqCtx<'_>) -> ZqPoll + 'static,
+    F: FnMut(ZqCtx<'_>) -> ZqPoll + 'static,
 {
     let job = unsafe { &mut *(data as *mut F) };
-    let mut ctx = ZqCtx::from_raw(env);
+    let ctx = ZqCtx::from_raw(env);
 
-    match job(&mut ctx) {
+    match job(ctx) {
         ZqPoll::Done => {
             // Done: the closure is consumed — free it (host does not free data).
             drop(unsafe { Box::from_raw(data as *mut F) });

@@ -10,8 +10,6 @@ use crate::{
     traits::{FromZqValue, IntoZqValue},
 };
 
-// ── ZqValue ──
-
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZqValue<'cx> {
@@ -81,39 +79,39 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// ToBoolean: whether the value is truthy (needs a live env).
-    pub fn is_truthy(&self, cx: &ZqCtx<'cx>) -> bool {
+    pub fn is_truthy(&self, cx: ZqCtx<'cx>) -> bool {
         cx.value_to_bool(*self)
     }
 
     /// JS `typeof`-style type.
-    pub fn type_of(&self, cx: &ZqCtx<'cx>) -> Result<ZqType, ZqError> {
+    pub fn type_of(&self, cx: ZqCtx<'cx>) -> Result<ZqType, ZqError> {
         Ok(cx.get_value_type(*self))
     }
 
     /// Read the value as `f64` (ToNumber; NaN for non-numeric values).
-    pub fn as_f64(&self, cx: &ZqCtx<'cx>) -> Result<f64, ZqError> {
+    pub fn as_f64(&self, cx: ZqCtx<'cx>) -> Result<f64, ZqError> {
         Ok(cx.value_to_float64(*self))
     }
 
     /// Read the value as `i32` (truncating ToNumber).
-    pub fn as_i32(&self, cx: &ZqCtx<'cx>) -> Result<i32, ZqError> {
+    pub fn as_i32(&self, cx: ZqCtx<'cx>) -> Result<i32, ZqError> {
         Ok(cx.value_to_float64(*self) as i32)
     }
 
     /// Read the value as bool (ToBoolean).
-    pub fn as_bool(&self, cx: &ZqCtx<'cx>) -> Result<bool, ZqError> {
+    pub fn as_bool(&self, cx: ZqCtx<'cx>) -> Result<bool, ZqError> {
         Ok(cx.value_to_bool(*self))
     }
 
     /// Read the value as a Rust `String` (ToString).
-    pub fn as_string(&self, cx: &ZqCtx<'cx>) -> Result<String, ZqError> {
+    pub fn as_string(&self, cx: ZqCtx<'cx>) -> Result<String, ZqError> {
         let api = zapi_singleton();
         let sval = unsafe { (api.value_to_string)(cx.env, self.raw) };
         Ok(cx.read_string(sval))
     }
 
     /// Read a symbol's description ("" for a description-less symbol).
-    pub fn symbol_description(&self, cx: &ZqCtx<'cx>) -> Result<String, ZqError> {
+    pub fn symbol_description(&self, cx: ZqCtx<'cx>) -> Result<String, ZqError> {
         let api = zapi_singleton();
         let sval = unsafe { (api.get_symbol_description)(cx.env, self.raw) };
         Ok(cx.read_string(sval))
@@ -122,7 +120,7 @@ impl<'cx> ZqValue<'cx> {
     /// Get a property (works for objects, arrays, typed arrays, ...).
     pub fn get<T: IntoZqValue<'cx>>(
         &self,
-        cx: &ZqCtx<'cx>,
+        cx: ZqCtx<'cx>,
         key: T,
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
@@ -135,7 +133,7 @@ impl<'cx> ZqValue<'cx> {
     /// Set a property.
     pub fn set<T: IntoZqValue<'cx>, V: IntoZqValue<'cx>>(
         &self,
-        cx: &ZqCtx<'cx>,
+        cx: ZqCtx<'cx>,
         key: T,
         val: V,
     ) -> Result<(), ZqError> {
@@ -147,14 +145,14 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Check whether a property exists.
-    pub fn has<T: IntoZqValue<'cx>>(&self, cx: &ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
+    pub fn has<T: IntoZqValue<'cx>>(&self, cx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
         let api = zapi_singleton();
         let key = key.into_zq_value(cx);
         Ok(unsafe { (api.has_property)(cx.env, self.raw, key.raw()) != 0 })
     }
 
     /// Delete a property.
-    pub fn delete<T: IntoZqValue<'cx>>(&self, cx: &ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
+    pub fn delete<T: IntoZqValue<'cx>>(&self, cx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
         let api = zapi_singleton();
         let key = key.into_zq_value(cx);
         Ok(unsafe { (api.delete_property)(cx.env, self.raw, key.raw(), 0) != 0 })
@@ -163,7 +161,7 @@ impl<'cx> ZqValue<'cx> {
     /// Call the value as a function: `val(this, args...)`.
     pub fn call(
         &self,
-        cx: &ZqCtx<'cx>,
+        cx: ZqCtx<'cx>,
         this: ZqValue<'cx>,
         args: &[ZqValue<'cx>],
     ) -> Result<ZqValue<'cx>, ZqError> {
@@ -171,21 +169,21 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Array / typed-array length.
-    pub fn array_len(&self, cx: &ZqCtx<'cx>) -> Result<u32, ZqError> {
+    pub fn array_len(&self, cx: ZqCtx<'cx>) -> Result<u32, ZqError> {
         let api = zapi_singleton();
         let len = unsafe { (api.array_len)(cx.env, self.raw) };
         Ok(cx.value_to_float64(ZqValue::from(len)) as u32)
     }
 
     /// Array / typed-array element at `idx`.
-    pub fn array_get(&self, cx: &ZqCtx<'cx>, idx: usize) -> Result<ZqValue<'cx>, ZqError> {
+    pub fn array_get(&self, cx: ZqCtx<'cx>, idx: usize) -> Result<ZqValue<'cx>, ZqError> {
         self.get(cx, cx.number(idx as f64))
     }
 
     /// Set array / typed-array element at `idx`.
     pub fn array_set<V: IntoZqValue<'cx>>(
         &self,
-        cx: &ZqCtx<'cx>,
+        cx: ZqCtx<'cx>,
         idx: usize,
         val: V,
     ) -> Result<(), ZqError> {
@@ -193,13 +191,13 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// `Array.prototype.push`.
-    pub fn array_push(&self, cx: &ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<(), ZqError> {
+    pub fn array_push(&self, cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<(), ZqError> {
         let api = zapi_singleton();
         unsafe { (api.array_push)(cx.env, self.raw, val.raw()) };
         Ok(())
     }
 
-    pub fn payload_mut<T: 'static>(&mut self, cx: &ZqCtx<'cx>) -> Option<&mut T> {
+    pub fn payload_mut<T: 'static>(&mut self, cx: ZqCtx<'cx>) -> Option<&mut T> {
         let p = cx.get_native_ptr(*self);
         if p.is_null() {
             None
@@ -236,18 +234,18 @@ impl<'cx> ZqCallInfo<'cx> {
         unsafe { (*self.raw).magic }
     }
 
-    pub fn this(&self, cx: &ZqCtx<'cx>) -> ZqValue<'cx> {
+    pub fn this(&self, _cx: ZqCtx<'cx>) -> ZqValue<'cx> {
         unsafe { ZqValue::from((*self.raw).this) }
     }
 
-    pub fn arg(&self, cx: &ZqCtx<'cx>, i: usize) -> ZqValue<'cx> {
+    pub fn arg(&self, _cx: ZqCtx<'cx>, i: usize) -> ZqValue<'cx> {
         if i >= self.len() {
             return ZqValue::from(0);
         }
         ZqValue::from(unsafe { *(*self.raw).args.add(i) })
     }
 
-    pub fn arg_as<T: FromZqValue<'cx>>(&self, cx: &ZqCtx<'cx>, i: usize) -> Result<T, ZqError> {
+    pub fn arg_as<T: FromZqValue<'cx>>(&self, cx: ZqCtx<'cx>, i: usize) -> Result<T, ZqError> {
         let v = self.arg(cx, i);
         T::from_zq_value(cx, v)
     }

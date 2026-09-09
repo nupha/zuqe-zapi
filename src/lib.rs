@@ -7,6 +7,7 @@ pub mod ctx;
 pub mod error;
 pub mod ffi;
 pub mod gc;
+pub mod iter;
 pub mod traits;
 pub mod value;
 
@@ -22,6 +23,7 @@ pub use {
     error::{ZqError, ZqStatus},
     ffi::{ZqEnv, ZqFieldDef, ZqRawValue, ZqType},
     gc::{ZqGcTrace, ZqGcTraceCtx},
+    iter::ZqAsyncIterable,
     traits::{FromZqValue, IntoZqValue},
     value::{ZqCallInfo, ZqValue},
 };
