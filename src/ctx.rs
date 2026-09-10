@@ -293,7 +293,10 @@ impl<'cx> ZqCtx<'cx> {
     ///
     /// * `work` — the blocking/long computation; must not touch JS values.
     /// * `convert` — runs on the JS thread; builds the JS value from the
-    ///   result. Return Err to reject the Promise.
+    ///   result. Return Err to reject the Promise. If it reported a JS
+    ///   exception (e.g. via `cx.throw_type(...)`), that exception becomes
+    ///   the rejection reason and is consumed; otherwise the Promise rejects
+    ///   with a generic "async work failed" reason.
     ///
     /// Wake correctness: the worker pushes its result via a [`ZqWakeSender`]
     /// (created by [`make_wake_channel`](Self::make_wake_channel)), so every
@@ -335,7 +338,17 @@ impl<'cx> ZqCtx<'cx> {
                 match c(cx, t) {
                     Ok(v) => unsafe { resolve_promise(cx.raw, promise, v.raw()) },
                     Err(_) => {
-                        let reason = cx.new_string("async work failed").unwrap();
+                        // The convert step failed. If it reported a JS
+                        // exception (e.g. via `ZqCtx::throw_*`), reject with
+                        // that exception and consume it so it is not left
+                        // pending on the runtime. Otherwise use a generic
+                        // reason.
+                        let reason = cx.take_exception();
+                        let reason = if reason.is_undefined() {
+                            cx.new_string("async work failed").unwrap()
+                        } else {
+                            reason
+                        };
                         unsafe { reject_promise(cx.raw, promise, reason.raw()) };
                     }
                 }
