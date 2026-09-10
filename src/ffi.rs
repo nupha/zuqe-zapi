@@ -61,12 +61,11 @@ pub type ZqRawCtx = *mut ZqRawCtxS;
 /// ABI representation of an engine value (GC node handle). **Not a newtype** — a raw `u64` type alias.
 pub type ZqRawValue = u64;
 
-/// Callback info containing target / this / args / exception value / magic.
+/// Callback info containing target / this / args / magic.
 ///
 /// Success values do **not** go through this struct — the `body` returns the
-/// result directly as the return value. Only "JS values to throw" are passed
-/// via `thrown` (written before returning `value_exception` so the host reads
-/// and throws it).
+/// result directly as the return value. On error, return `value_exception`;
+/// the pending exception is obtained via `take_exception` / `exception`.
 #[repr(C)]
 pub struct ZqCallInfoS {
     /// The called function object.
@@ -77,9 +76,6 @@ pub struct ZqCallInfoS {
     pub args: *const ZqRawValue,
     /// Argument count.
     pub argc: u32,
-    /// JS value to throw (0 = none); written by the extension before returning
-    /// `value_exception`.
-    pub thrown: ZqRawValue,
     /// Magic value set at registration (`cc.magic()`), used for dispatching one
     /// body across multiple methods.
     pub magic: i32,
@@ -89,13 +85,9 @@ pub struct ZqCallInfoS {
 ///
 /// **The return value IS the JS value**: on success, return the result handle;
 /// on error, return the `value_exception` sentinel (same convention as quickjs's
-/// `JS_EXCEPTION`). To throw a specific JS value, write it into `info.thrown`
-/// and then return `value_exception`, so the host throws the corresponding value.
-/// See `ZqApi::wake_handle_new` / `wake_handle_wake` / `wake_handle_free`.
+/// `JS_EXCEPTION`). See `ZqApi::wake_handle_new` / `wake_handle_wake` / `wake_handle_free`.
 #[repr(C)]
-pub struct ZqWakeHandleS {
-    _opaque: [*mut c_void; 0],
-}
+pub struct ZqWakeHandleS([u8; 0]);
 
 /// GC trace context — an opaque FFI handle for calling `gc_mark`.
 ///
@@ -110,7 +102,6 @@ pub struct ZqWakeHandleS {
 #[repr(C)]
 pub struct ZqGcTraceCtxS([u8; 0]);
 
-/// `info.thrown`, then return `value_exception` so the host throws the corresponding value.
 pub type ZqBodyFn = unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS) -> ZqRawValue;
 
 /// FFI form of the `spawn_promise` work closure: executes once on a spawned
@@ -695,13 +686,29 @@ pub struct ZqApi {
     pub promise_reject:
         unsafe extern "C" fn(env: ZqRawCtx, promise: ZqRawValue, reason: ZqRawValue),
 
+    /// Throw a JS error of the given type. `err_type` is one of the
+    /// `ZQ_ERR_TYPE_*` constants; `err_message` / `err_len` is the UTF-8
+    /// error message. The host creates the appropriate Error object, stores
+    /// it as the pending exception, and returns `value_exception`.
+    /// Throw a JS error of the given type. `err_type` is one of the
+    /// `ZQ_ERR_TYPE_*` integer constants (see [`crate::ZqErrorType`]);
+    /// `err_message` / `err_len` is the UTF-8 error message. The host creates
+    /// the appropriate Error object, stores it as the pending exception, and
+    /// returns `value_exception`.
+    pub throw: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        err_type: i32,
+        err_message: *const u8,
+        err_message_len: i32,
+    ),
+
     // ── exception hygiene ──
-    /// Take the pending exception and return its raw handle
+    /// Take the current exception and return raw error value
     /// (`value_undefined` if none). After this call `cur_exception` is empty;
     /// the returned handle is GC-rooted until the current scope ends.
     pub take_exception: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
 
-    /// Peek the pending exception without consuming it
+    /// Peek the current exception without consuming it
     /// (`value_undefined` if none).
     pub exception: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
 

@@ -20,7 +20,7 @@ pub use {
     channel::ZqWakeSender,
     class::Class,
     ctx::{ZqCtx, ZqWakeHandle},
-    error::{ZqError, ZqStatus},
+    error::{ZqError, ZqErrorType},
     ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue},
     gc::{ZqGcTrace, ZqGcTraceCtx},
     iter::{AsyncIterResult, ZqAsyncIterable},
@@ -28,28 +28,30 @@ pub use {
     value::{ZqCallInfo, ZqValue, ZqValueType},
 };
 
-thread_local! {
-    pub(crate) static ZAPI_SINGLETON: std::cell::Cell<*const ZqApi> = const { std::cell::Cell::new(std::ptr::null()) };
-}
-
-/// The process-wide `ZqApi` singleton, established by [`zapi_init`] (the module
-/// entry `zq_module_register` runs it before any body executes).
-///
-/// The caller **must** have called `zapi_init` first — i.e. only use this inside
-/// a body / module init. It is a programming error otherwise: `debug_assertions`
-/// builds panic via `unwrap`, release builds use `unwrap_unchecked` (UB).
-#[inline]
-pub fn zapi_singleton() -> &'static ZqApi {
-    let api = ZAPI_SINGLETON.with(|g| g.get());
-
-    // SAFETY: the caller guarantees `zapi_init` already ran
-    #[cfg(debug_assertions)]
-    unsafe {
-        debug_assert!(!api.is_null());
-        api.as_ref().unwrap()
+impl ZqApi {
+    thread_local! {
+        pub(crate) static ZAPI_SINGLETON: std::cell::Cell<*const ZqApi> = const { std::cell::Cell::new(std::ptr::null()) };
     }
-    #[cfg(not(debug_assertions))]
-    unsafe {
-        api.as_ref().unwrap_unchecked()
+
+    /// The process-wide `ZqApi` singleton, established by [`__private::zapi_init`]
+    /// (the module entry `zq_module_register` runs it before any body executes).
+    ///
+    /// The caller **must** have called `zapi_init` first — i.e. only use this inside
+    /// a body / module init. It is a programming error otherwise: `debug_assertions`
+    /// builds panic via `unwrap`, release builds use `unwrap_unchecked` (UB).
+    #[inline]
+    pub fn singleton() -> &'static Self {
+        let api = Self::ZAPI_SINGLETON.with(|g| g.get());
+
+        // SAFETY: the caller guarantees `zapi_init` already ran
+        #[cfg(debug_assertions)]
+        unsafe {
+            debug_assert!(!api.is_null());
+            api.as_ref().unwrap()
+        }
+        #[cfg(not(debug_assertions))]
+        unsafe {
+            api.as_ref().unwrap_unchecked()
+        }
     }
 }

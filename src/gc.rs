@@ -4,9 +4,8 @@
 use std::ffi::c_void;
 
 use crate::{
-    ZqError, ZqStatus,
-    ffi::{ZqGcTraceCtxS, ZqRawValue},
-    zapi_singleton,
+    ZqError,
+    ffi::{ZqApi, ZqGcTraceCtxS, ZqRawValue},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -29,13 +28,9 @@ impl ZqGcTraceCtx {
 
     /// Reports `val` to the GC so its graph stays reachable during tracing.
     pub fn mark(&self, val: ZqRawValue) -> Result<(), ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let r = unsafe { (api.gc_mark)(self.raw, val) };
-        if r < 0 {
-            Err(ZqError::new(ZqStatus::Error, Some("gc_mark failed".into())))
-        } else {
-            Ok(())
-        }
+        if r < 0 { Err(ZqError) } else { Ok(()) }
     }
 }
 

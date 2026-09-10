@@ -28,7 +28,7 @@ pub type ZqCallbackFn = unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS
 /// re-registered module — checked in debug builds (`debug_assert_eq!`), and
 /// silently ignored in release.
 pub fn zapi_init(api: *const ZqApi) {
-    crate::ZAPI_SINGLETON.with(|g| {
+    ZqApi::ZAPI_SINGLETON.with(|g| {
         let curr = g.get();
         if curr.is_null() {
             g.set(api);
@@ -39,12 +39,6 @@ pub fn zapi_init(api: *const ZqApi) {
             );
         }
     });
-}
-
-/// The host's exception sentinel handle (`ZqApi.value_exception`). Trampolines
-/// return it to signal "this call threw".
-pub fn exception_value() -> ZqRawValue {
-    crate::zapi_singleton().value_exception
 }
 
 /// Host-provided canonical dylib path (NUL-terminated), stashed by the

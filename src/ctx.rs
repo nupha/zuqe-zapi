@@ -4,9 +4,8 @@
 use std::{marker::PhantomData, os::raw::c_void};
 
 use crate::{
-    ZqError, ZqRawCtx, ZqStatus, ZqValue,
-    ffi::{ZqCallInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue, ZqWakeHandleS},
-    zapi_singleton,
+    ZqError, ZqRawCtx, ZqValue,
+    ffi::{ZqApi, ZqCallInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue, ZqWakeHandleS},
 };
 
 /// Clonable, thread-safe handle to wake the JS event loop from any thread.
@@ -19,7 +18,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ZqWakeHandle {
     raw: *mut ZqWakeHandleS,
-    /// Captured at creation (on the JS thread): `zapi_singleton()` is
+    /// Captured at creation (on the JS thread): `ZqApi::singleton()` is
     /// thread-local, so `wake()` from worker threads must not touch it.
     wake_fn: unsafe extern "C" fn(*mut ZqWakeHandleS),
     free_fn: unsafe extern "C" fn(*mut ZqWakeHandleS),
@@ -79,7 +78,7 @@ impl<'cx> ZqCtx<'cx> {
     /// thread (inside a callback / job) and move the handle into whatever
     /// thread or task produces the async result.
     pub fn wake_handle(&self) -> ZqWakeHandle {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         ZqWakeHandle {
             raw: unsafe { (api.wake_handle_new)(self.raw) },
             wake_fn: api.wake_handle_wake,
@@ -103,7 +102,7 @@ impl<'cx> ZqCtx<'cx> {
     {
         let trampoline: ZqJobRunFn = zq_poll_trampoline::<F>;
         unsafe {
-            (zapi_singleton().add_polling_job)(
+            (ZqApi::singleton().add_polling_job)(
                 self.raw,
                 trampoline,
                 None,
@@ -113,30 +112,30 @@ impl<'cx> ZqCtx<'cx> {
     }
 
     pub fn new_string(&self, s: &str) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let s = unsafe { (api.new_string_utf8)(self.raw, s.as_ptr(), s.len()) };
         if s == api.value_exception {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(s))
         }
     }
 
     pub fn new_object(&self) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let v = unsafe { (api.new_object)(self.raw) };
         if v == api.value_exception {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
         }
     }
 
     pub fn new_array(&self, elements: &[ZqRawValue]) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let arr = unsafe { (api.new_array)(self.raw, elements.as_ptr(), elements.len()) };
         if arr == api.value_exception {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(arr))
         }
@@ -144,11 +143,11 @@ impl<'cx> ZqCtx<'cx> {
 
     /// Create a JS `Symbol(desc)`.
     pub fn new_symbol(&self, desc: &str) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let d = self.new_string(desc)?;
         let v = unsafe { (api.new_symbol)(self.raw, d.raw()) };
         if v == api.value_exception {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
         }
@@ -156,19 +155,19 @@ impl<'cx> ZqCtx<'cx> {
 
     /// Read a JS value as `f64` (ToNumber).
     pub fn value_to_float64(&self, val: ZqValue<'cx>) -> f64 {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         unsafe { (api.value_to_float64)(self.raw, val.raw()) }
     }
 
     /// Read a JS value as bool (ToBoolean).
     pub fn value_to_bool(&self, val: ZqValue<'cx>) -> bool {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         unsafe { (api.value_to_bool)(self.raw, val.raw()) != 0 }
     }
 
     /// Read the UTF-8 contents of a JS string value.
     pub fn read_string(&self, val: ZqRawValue) -> String {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         // Measure-then-copy: a null buf returns the byte count; -1 = not a string.
         let len = unsafe { (api.get_string_utf8)(self.raw, val, std::ptr::null_mut(), 0, 0) };
         if len <= 0 {
@@ -181,7 +180,7 @@ impl<'cx> ZqCtx<'cx> {
 
     /// Look up a property on the global object (`globalThis[name]`).
     pub fn get_global(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let key = self.new_string(name)?;
         Ok(ZqValue::from(unsafe {
             (api.get_global)(self.raw, key.raw())
@@ -192,24 +191,20 @@ impl<'cx> ZqCtx<'cx> {
     pub fn call_constructor(
         &self,
         target: ZqValue<'cx>,
-        args: &[ZqValue<'cx>],
+        args: &[ZqValue],
     ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
         let mut info = ZqCallInfoS {
             target: target.raw(),
             this: 0,
             args: raw_args.as_ptr(),
             argc: raw_args.len() as u32,
-            thrown: 0,
             magic: 0,
         };
         let ret = unsafe { (api.call_constructor)(self.raw, &mut info) };
         if ret == api.value_exception {
-            Err(ZqError::new(
-                ZqStatus::Exception,
-                Some("call_constructor threw".into()),
-            ))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(ret))
         }
@@ -233,31 +228,17 @@ impl<'cx> ZqCtx<'cx> {
         func: Option<crate::ffi::ZqGcTraceFn>,
         opaque: *mut std::ffi::c_void,
     ) -> Result<(), ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let r = unsafe { (api.set_gc_trace_func)(self.raw, func, opaque) };
-        if r < 0 {
-            Err(ZqError::new(
-                ZqStatus::Error,
-                Some("set_gc_trace_func failed".into()),
-            ))
-        } else {
-            Ok(())
-        }
+        if r < 0 { Err(ZqError) } else { Ok(()) }
     }
 
     // ── class / instance helpers (requires GLOBAL_API) ──
 
     pub fn register_class(&self, def: &ZqClassDef) -> Result<i32, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let r = unsafe { (api.register_class)(self.raw, def) };
-        if r < 0 {
-            Err(ZqError::new(
-                ZqStatus::Error,
-                Some("register_class failed".into()),
-            ))
-        } else {
-            Ok(r)
-        }
+        if r < 0 { Err(ZqError) } else { Ok(r) }
     }
 
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -266,20 +247,17 @@ impl<'cx> ZqCtx<'cx> {
         def: &ZqClassDef,
         opaque: *mut std::ffi::c_void,
     ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let r = unsafe { (api.new_instance)(self.raw, def, opaque) };
         if r == 0 || r == api.value_exception {
-            Err(ZqError::new(
-                ZqStatus::Exception,
-                Some("new_instance failed: class may not be registered or creation error".into()),
-            ))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(r))
         }
     }
 
     pub fn get_native_ptr(&self, val: ZqValue<'cx>) -> *mut std::ffi::c_void {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         unsafe { (api.get_native_ptr)(self.raw, val.raw()) }
     }
 
@@ -290,67 +268,24 @@ impl<'cx> ZqCtx<'cx> {
     pub fn call_function(
         &self,
         target: ZqValue<'cx>,
-        this: ZqValue<'cx>,
-        args: &[ZqValue<'cx>],
+        this: ZqValue,
+        args: &[ZqValue],
     ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
         let mut info = ZqCallInfoS {
             target: target.raw(),
             this: this.raw(),
             args: raw_args.as_ptr(),
             argc: raw_args.len() as u32,
-            thrown: 0,
             magic: 0,
         };
         let ret = unsafe { (api.call_function)(self.raw, &mut info) };
         if ret == api.value_exception {
-            Err(ZqError::new(
-                ZqStatus::Exception,
-                Some("call_function threw".into()),
-            ))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(ret))
         }
-    }
-
-    /// Create a JS error object from a `ZqError` and return its raw handle.
-    /// Used by macro trampolines to throw proper JS errors when `ZqError`
-    /// carries a message but no pre-built exception handle.
-    pub fn throw_error(&self, err: &ZqError) -> ZqRawValue {
-        //todo!("add new api throw_error");
-
-        let name = match err.status() {
-            ZqStatus::TypeError => "TypeError",
-            ZqStatus::RangeError => "RangeError",
-            _ => "Error",
-        };
-        let msg = err.message().unwrap_or("");
-
-        if let Ok(ctor) = self.get_global(name)
-            && let Ok(msg_val) = self.new_string(msg)
-            && let Ok(obj) = self.call_constructor(ctor, &[msg_val])
-        {
-            return obj.raw();
-        }
-
-        // Fallback: return exception sentinel
-        zapi_singleton().value_exception
-    }
-
-    /// Peek the pending JS exception without consuming it.
-    /// Returns the exception value, or `undefined` if none is pending.
-    pub fn exception(&self) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        ZqValue::from(unsafe { (api.exception)(self.raw) })
-    }
-
-    /// Take the pending JS exception, clearing `cur_exception` and returning
-    /// the exception value (GC-rooted until scope ends).
-    /// Returns `undefined` if no exception was pending.
-    pub fn take_exception(&self) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        ZqValue::from(unsafe { (api.take_exception)(self.raw) })
     }
 
     /// High-level one-shot async: run `work` on a dedicated thread, deliver
@@ -376,7 +311,7 @@ impl<'cx> ZqCtx<'cx> {
         F: FnOnce() -> T + Send + 'static,
         C: for<'a> FnOnce(ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
     {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
 
         let promise = unsafe { (api.new_promise)(self.raw) };
         let (tx, rx) = self.make_wake_channel::<T>();
@@ -399,8 +334,8 @@ impl<'cx> ZqCtx<'cx> {
                 // context must be fresh — it's transient across ticks.
                 match c(cx, t) {
                     Ok(v) => unsafe { resolve_promise(cx.raw, promise, v.raw()) },
-                    Err(e) => {
-                        let reason = cx.new_string(&e.to_string()).unwrap();
+                    Err(_) => {
+                        let reason = cx.new_string("async work failed").unwrap();
                         unsafe { reject_promise(cx.raw, promise, reason.raw()) };
                     }
                 }

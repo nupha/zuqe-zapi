@@ -4,10 +4,9 @@
 use std::marker::PhantomData;
 
 use crate::{
-    ZqCtx, ZqError, ZqStatus,
-    ffi::{ZqCallInfoS, ZqRawValue},
-    traits::{FromZqValue, IntoZqValue},
-    zapi_singleton,
+    ZqCtx, ZqError,
+    ffi::{ZqApi, ZqCallInfoS, ZqRawValue},
+    traits::IntoZqValue,
 };
 
 /// A JS value type (`typeof` style). `#[repr(i32)]`, cbindgen translates to C enum.
@@ -55,6 +54,12 @@ pub struct ZqValue<'cx> {
 impl<'cx> From<ZqRawValue> for ZqValue<'cx> {
     #[inline(always)]
     fn from(raw: ZqRawValue) -> Self {
+        debug_assert_ne!(
+            raw,
+            Self::exception_value(),
+            "you forgot to guard Exception value"
+        );
+
         Self {
             raw,
             _marker: PhantomData,
@@ -71,22 +76,22 @@ impl<'cx> From<ZqValue<'cx>> for ZqRawValue {
 
 impl<'cx> ZqValue<'cx> {
     pub fn undefined() -> Self {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         ZqValue::from(api.value_undefined)
     }
 
     pub fn null() -> Self {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         ZqValue::from(api.value_null)
     }
 
     pub fn bool(b: bool) -> Self {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         ZqValue::from(if b { api.value_true } else { api.value_false })
     }
 
     pub fn number(n: f64) -> Self {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let num = if n.is_nan() {
             api.value_nan
         } else if n == 1.0 {
@@ -113,9 +118,16 @@ impl<'cx> ZqValue<'cx> {
         self.raw
     }
 
+    /// The engine's exception sentinel handle (`value_exception`).
+    /// Trampolines return it to signal "this call threw".
+    #[inline(always)]
+    pub fn exception_value() -> ZqRawValue {
+        ZqApi::singleton().value_exception
+    }
+
     /// The type of JS value
     pub fn value_type(&self) -> ZqValueType {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         unsafe {
             let t = (api.get_value_type)(self.raw);
             debug_assert!(
@@ -129,39 +141,39 @@ impl<'cx> ZqValue<'cx> {
     /// true if the value is JS `undefined`.
     #[inline]
     pub fn is_undefined(&self) -> bool {
-        self.raw == zapi_singleton().value_undefined
+        self.raw == ZqApi::singleton().value_undefined
     }
 
     /// true if the value is JS `null`.
     #[inline]
     pub fn is_null(&self) -> bool {
-        self.raw == zapi_singleton().value_null
+        self.raw == ZqApi::singleton().value_null
     }
 
     /// true if the value is `undefined` or `null`.
     #[inline]
     pub fn is_undefined_or_null(&self) -> bool {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         self.raw == api.value_undefined || self.raw == api.value_null
     }
 
     /// true if the value is the boolean `true` or `false`.
     #[inline]
     pub fn is_bool(&self) -> bool {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         self.raw == api.value_true || self.raw == api.value_false
     }
 
     /// true if the value is the exception sentinel (`value_exception`).
     #[inline]
     pub fn is_exception(&self) -> bool {
-        self.raw == zapi_singleton().value_exception
+        self.raw == ZqApi::singleton().value_exception
     }
 
     /// true if the value is the canonical `NaN`.
     #[inline]
     pub fn is_nan(&self) -> bool {
-        self.raw == zapi_singleton().value_nan
+        self.raw == ZqApi::singleton().value_nan
     }
 
     /// ToBoolean: whether the value is truthy (needs a live env).
@@ -186,10 +198,10 @@ impl<'cx> ZqValue<'cx> {
 
     /// Read the value as a Rust `String` (ToString).
     pub fn as_string(&self, ctx: ZqCtx) -> Result<String, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let sval = unsafe { (api.value_to_string)(ctx.raw, self.raw) };
         if sval == api.value_exception {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(ctx.read_string(sval))
         }
@@ -197,10 +209,10 @@ impl<'cx> ZqValue<'cx> {
 
     /// Read a symbol's description ("" for a description-less symbol).
     pub fn symbol_description(&self, ctx: ZqCtx) -> Result<String, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let sval = unsafe { (api.get_symbol_description)(ctx.raw, self.raw) };
         if sval == api.value_exception {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(ctx.read_string(sval))
         }
@@ -232,11 +244,11 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: T,
     ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let key = key.into_zq_value(ctx);
         let v = unsafe { (api.get_property)(ctx.raw, self.raw, key.raw()) };
         if v == api.value_exception {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
         }
@@ -255,15 +267,11 @@ impl<'cx> ZqValue<'cx> {
         key: T,
         val: V,
     ) -> Result<bool, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let key = key.into_zq_value(ctx);
         let val = val.into_zq_value(ctx);
         let r = unsafe { (api.set_property)(ctx.raw, self.raw, key.raw(), val.raw(), 0, 0) };
-        if r < 0 {
-            Err(ZqError::from(ZqStatus::Exception))
-        } else {
-            Ok(r != 0)
-        }
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Set a property.
@@ -279,14 +287,10 @@ impl<'cx> ZqValue<'cx> {
 
     /// Check whether a property exists.
     pub fn has<T: IntoZqValue<'cx>>(&self, cx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let key = key.into_zq_value(cx);
         let r = unsafe { (api.has_property)(cx.raw, self.raw, key.raw()) };
-        if r < 0 {
-            Err(ZqError::from(ZqStatus::Exception))
-        } else {
-            Ok(r != 0)
-        }
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Check whether a property exists.
@@ -297,14 +301,10 @@ impl<'cx> ZqValue<'cx> {
 
     /// Delete a property.
     pub fn delete<T: IntoZqValue<'cx>>(&self, ctx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let key = key.into_zq_value(ctx);
         let r = unsafe { (api.delete_property)(ctx.raw, self.raw, key.raw(), 0) };
-        if r < 0 {
-            Err(ZqError::from(ZqStatus::Exception))
-        } else {
-            Ok(r != 0)
-        }
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     pub fn delete_str<T: IntoZqValue<'cx>>(
@@ -318,10 +318,10 @@ impl<'cx> ZqValue<'cx> {
 
     /// Get length property of value
     pub fn get_length_prop(&self, cx: ZqCtx<'cx>) -> Result<usize, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let len = unsafe { (api.get_length_prop)(cx.raw, self.raw) };
         if len < 0 {
-            Err(ZqError::from(ZqStatus::Exception))
+            Err(ZqError)
         } else {
             Ok(len as usize)
         }
@@ -339,13 +339,9 @@ impl<'cx> ZqValue<'cx> {
 
     /// `Array.prototype.push`.
     pub fn array_push(&self, ctx: ZqCtx, val: ZqValue) -> Result<usize, ZqError> {
-        let api = zapi_singleton();
+        let api = ZqApi::singleton();
         let r = unsafe { (api.array_push)(ctx.raw, self.raw, val.raw()) };
-        if r < 0 {
-            Err(ZqError::from(ZqStatus::Exception))
-        } else {
-            Ok(r as usize)
-        }
+        if r < 0 { Err(ZqError) } else { Ok(r as usize) }
     }
 }
 
@@ -376,19 +372,14 @@ impl<'cx> ZqCallInfo<'cx> {
         unsafe { (*self.raw).magic }
     }
 
-    pub fn this(&self, _cx: ZqCtx<'cx>) -> ZqValue<'cx> {
+    pub fn this(&self) -> ZqValue<'cx> {
         unsafe { ZqValue::from((*self.raw).this) }
     }
 
-    pub fn arg(&self, _cx: ZqCtx<'cx>, i: usize) -> ZqValue<'cx> {
+    pub fn arg(&self, i: usize) -> ZqValue<'cx> {
         if i >= self.len() {
             return ZqValue::from(0);
         }
         ZqValue::from(unsafe { *(*self.raw).args.add(i) })
-    }
-
-    pub fn arg_as<T: FromZqValue<'cx>>(&self, cx: ZqCtx<'cx>, i: usize) -> Result<T, ZqError> {
-        let v = self.arg(cx, i);
-        T::from_zq_value(cx, v)
     }
 }
