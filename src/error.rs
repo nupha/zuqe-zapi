@@ -50,10 +50,15 @@ impl std::fmt::Display for ZqError {
 impl std::error::Error for ZqError {}
 
 impl<'cx> ZqCtx<'cx> {
-    /// Create a JS error object from a `ZqError` and return its raw handle.
-    /// Used by macro trampolines to throw proper JS errors when `ZqError`
-    /// carries a message but no pre-built exception handle.
+    /// Throw a JS error of `err_type` with `err_msg`, and return the opaque
+    /// error marker so the throw can be used as the error expression itself:
+    ///
+    /// ```ignore
+    /// return Err(cx.throw(ZqErrorType::Type, "bad argument"));
+    /// some_val.ok_or_else(|| cx.throw(ZqErrorType::Range, "out of range"))?;
+    /// ```
     #[cold]
+    #[must_use]
     pub fn throw(&self, err_type: ZqErrorType, err_msg: &str) -> ZqError {
         let api = ZqApi::singleton();
         unsafe {
@@ -65,6 +70,62 @@ impl<'cx> ZqCtx<'cx> {
             );
         }
         ZqError
+    }
+
+    /// Throw an `EvalError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_eval(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Eval, msg)
+    }
+
+    /// Throw a `RangeError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_range(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Range, msg)
+    }
+
+    /// Throw a `ReferenceError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_reference(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Reference, msg)
+    }
+
+    /// Throw a `SyntaxError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_syntax(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Syntax, msg)
+    }
+
+    /// Throw a `TypeError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_type(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Type, msg)
+    }
+
+    /// Throw a `URIError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_uri(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Uri, msg)
+    }
+
+    /// Throw an `InternalError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_internal(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Internal, msg)
+    }
+
+    /// Throw an `AggregateError`. Sugar for [`ZqCtx::throw`].
+    #[cold]
+    #[must_use]
+    pub fn throw_aggregate(&self, msg: &str) -> ZqError {
+        self.throw(ZqErrorType::Aggregate, msg)
     }
 
     /// Peek the pending JS exception without consuming it.
