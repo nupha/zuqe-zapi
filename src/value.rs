@@ -4,11 +4,46 @@
 use std::marker::PhantomData;
 
 use crate::{
-    __private::zapi_singleton,
     ZqCtx, ZqError,
-    ffi::{ZqCallInfoS, ZqRawValue, ZqType},
+    ffi::{ZqCallInfoS, ZqRawValue},
     traits::{FromZqValue, IntoZqValue},
+    zapi_singleton,
 };
+
+/// A JS value type (`typeof` style). `#[repr(i32)]`, cbindgen translates to C enum.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZqValueType {
+    Undefined = 0,
+    Null = 1,
+    Bool = 2,
+    Number = 3,
+    String = 4,
+    Symbol = 5,
+    Function = 6,
+    Object = 7,
+    BigInt = 8,
+    /// The exception sentinel (`value_exception`); not a normal JS value.
+    Exception = 9,
+}
+
+impl ZqValueType {
+    /// The JS `typeof` name ("undefined", "boolean", ... "object").
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Undefined => "undefined",
+            Self::Null => "object", // JS quirk: `typeof null` is "object"
+            Self::Bool => "boolean",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Symbol => "symbol",
+            Self::Function => "function",
+            Self::Object => "object",
+            Self::BigInt => "bigint",
+            Self::Exception => "exception",
+        }
+    }
+}
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +73,19 @@ impl<'cx> ZqValue<'cx> {
     #[inline(always)]
     pub fn raw(&self) -> ZqRawValue {
         self.raw
+    }
+
+    /// The type of JS value
+    pub fn value_type(&self) -> ZqValueType {
+        let api = zapi_singleton();
+        unsafe {
+            let t = (api.get_value_type)(self.raw);
+            debug_assert!(
+                (crate::ffi::ZQ_VALUE_TYPE_UNDEFINED..=crate::ffi::ZQ_VALUE_TYPE_EXCEPTION)
+                    .contains(&t)
+            );
+            std::mem::transmute::<i32, ZqValueType>(t)
+        }
     }
 
     /// true if the value is JS `undefined`.
@@ -81,11 +129,6 @@ impl<'cx> ZqValue<'cx> {
     /// ToBoolean: whether the value is truthy (needs a live env).
     pub fn is_truthy(&self, cx: ZqCtx<'cx>) -> bool {
         cx.value_to_bool(*self)
-    }
-
-    /// JS `typeof`-style type.
-    pub fn type_of(&self, cx: ZqCtx<'cx>) -> Result<ZqType, ZqError> {
-        Ok(cx.get_value_type(*self))
     }
 
     /// Read the value as `f64` (ToNumber; NaN for non-numeric values).

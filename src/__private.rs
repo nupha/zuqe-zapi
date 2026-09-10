@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 //! Internal types used by `zapi-macros`. Not part of the public API.
 
-use std::cell::Cell;
-use std::ffi::{CStr, c_char};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::{
+    ffi::{CStr, c_char},
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 pub use crate::{
     ctx::ZqCtx,
@@ -19,43 +23,12 @@ pub use crate::{
 /// Returns the JS result value, or `value_exception` on error.
 pub type ZqCallbackFn = unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS) -> ZqRawValue;
 
-/// The host's exception sentinel handle (`ZqApi.value_exception`). Trampolines
-/// return it to signal "this call threw".
-pub fn exception_value() -> ZqRawValue {
-    zapi_singleton().value_exception
-}
-
-thread_local! {
-    static ZAPI_SINGLETON: Cell<*const ZqApi> = const { Cell::new(std::ptr::null()) };
-}
-
-/// The process-wide `ZqApi` singleton, established by [`zapi_init`] (the module
-/// entry `zq_module_register` runs it before any body executes).
-///
-/// The caller **must** have called `zapi_init` first — i.e. only use this inside
-/// a body / module init. It is a programming error otherwise: `debug_assertions`
-/// builds panic via `unwrap`, release builds use `unwrap_unchecked` (UB).
-#[inline]
-pub fn zapi_singleton() -> &'static ZqApi {
-    let api = ZAPI_SINGLETON.with(|g| g.get());
-
-    // SAFETY: the caller guarantees `zapi_init` already ran
-    #[cfg(debug_assertions)]
-    unsafe {
-        api.as_ref().unwrap()
-    }
-    #[cfg(not(debug_assertions))]
-    unsafe {
-        api.as_ref().unwrap_unchecked()
-    }
-}
-
 /// Establish the process-wide `ZqApi` singleton. Idempotent: sets it only on
 /// the first call. A later call with a *different* pointer means two hosts or a
 /// re-registered module — checked in debug builds (`debug_assert_eq!`), and
 /// silently ignored in release.
 pub fn zapi_init(api: *const ZqApi) {
-    ZAPI_SINGLETON.with(|g| {
+    crate::ZAPI_SINGLETON.with(|g| {
         let curr = g.get();
         if curr.is_null() {
             g.set(api);
@@ -66,6 +39,12 @@ pub fn zapi_init(api: *const ZqApi) {
             );
         }
     });
+}
+
+/// The host's exception sentinel handle (`ZqApi.value_exception`). Trampolines
+/// return it to signal "this call threw".
+pub fn exception_value() -> ZqRawValue {
+    crate::zapi_singleton().value_exception
 }
 
 /// Host-provided canonical dylib path (NUL-terminated), stashed by the

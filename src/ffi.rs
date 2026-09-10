@@ -41,40 +41,17 @@ pub const ZQ_PROP_CONFIGURABLE: u32 = 1;
 pub const ZQ_PROP_WRITABLE: u32 = 1 << 1;
 pub const ZQ_PROP_ENUMERABLE: u32 = 1 << 2;
 
-/// A JS value type (`typeof` style). `#[repr(i32)]`, cbindgen translates to C enum.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ZqType {
-    Undefined = 0,
-    Null = 1,
-    Bool = 2,
-    Number = 3,
-    String = 4,
-    Symbol = 5,
-    Function = 6,
-    Object = 7,
-    BigInt = 8,
-    /// The exception sentinel (`value_exception`); not a normal JS value.
-    Exception = 9,
-}
-
-impl ZqType {
-    /// The JS `typeof` name ("undefined", "boolean", ... "object").
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Undefined => "undefined",
-            Self::Null => "object", // JS quirk: `typeof null` is "object"
-            Self::Bool => "boolean",
-            Self::Number => "number",
-            Self::String => "string",
-            Self::Symbol => "symbol",
-            Self::Function => "function",
-            Self::Object => "object",
-            Self::BigInt => "bigint",
-            Self::Exception => "exception",
-        }
-    }
-}
+pub const ZQ_VALUE_TYPE_UNDEFINED: i32 = 0;
+pub const ZQ_VALUE_TYPE_NULL: i32 = 1;
+pub const ZQ_VALUE_TYPE_BOOL: i32 = 2;
+pub const ZQ_VALUE_TYPE_NUMBER: i32 = 3;
+pub const ZQ_VALUE_TYPE_STRING: i32 = 4;
+pub const ZQ_VALUE_TYPE_SYMBOL: i32 = 5;
+pub const ZQ_VALUE_TYPE_FUNCTION: i32 = 6;
+pub const ZQ_VALUE_TYPE_OBJECT: i32 = 7;
+pub const ZQ_VALUE_TYPE_BIGINT: i32 = 8;
+/// The exception sentinel (`value_exception`); not a normal JS value.
+pub const ZQ_VALUE_TYPE_EXCEPTION: i32 = 9;
 
 /// ABI representation of an engine value (GC node handle). **Not a newtype** — a raw `u64` type alias.
 pub type ZqRawValue = u64;
@@ -647,9 +624,8 @@ pub struct ZqApi {
     ) -> ZqRawValue,
     pub get_native_ptr: unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue) -> *mut c_void,
 
-    // ── value introspection ──
-    /// The type of a JS value (`ZqType`, a C enum across the ABI).
-    pub get_value_type: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> ZqType,
+    /// The type of a JS value, see ZQ_VALUE_TYPE_XXX const.
+    pub get_value_type: unsafe extern "C" fn(val: ZqRawValue) -> i32,
 
     /// Coerce a JS value to an f64 number (ToNumber; NaN for non-numeric).
     pub value_to_float64: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> f64,

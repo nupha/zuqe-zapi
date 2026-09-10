@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use crate::{__private::zapi_singleton, ZqCtx, ZqError, ZqRawCtx, ZqRawValue, ZqValue};
+use crate::{ZqCtx, ZqError, ZqRawCtx, ZqRawValue, ZqValue, zapi_singleton};
 
 /// Result of fetching the next value from an async iterator.
 pub enum AsyncIterResult<'a> {
@@ -18,9 +18,10 @@ pub trait ZqAsyncIterable {
 
 impl<'cx> ZqCtx<'cx> {
     pub fn new_async_iterator<T: ZqAsyncIterable>(&self, iter: T) -> Result<ZqValue<'cx>, ZqError> {
+        let api = zapi_singleton();
         let boxed = Box::new(iter);
         let opaque = Box::into_raw(boxed) as *mut c_void;
-        let api = zapi_singleton();
+
         let raw = unsafe {
             (api.new_async_iterator)(
                 self.raw,

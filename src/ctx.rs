@@ -4,9 +4,9 @@
 use std::{marker::PhantomData, os::raw::c_void};
 
 use crate::{
-    __private::zapi_singleton,
-    ZqError, ZqRawCtx, ZqStatus, ZqType, ZqValue,
+    ZqError, ZqRawCtx, ZqStatus, ZqValue,
     ffi::{ZqCallInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue, ZqWakeHandleS},
+    zapi_singleton,
 };
 
 /// Clonable, thread-safe handle to wake the JS event loop from any thread.
@@ -64,6 +64,13 @@ impl<'cx> From<ZqRawCtx> for ZqCtx<'cx> {
             raw,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<'cx> From<ZqCtx<'cx>> for ZqRawCtx {
+    #[inline(always)]
+    fn from(ctx: ZqCtx<'cx>) -> Self {
+        ctx.raw
     }
 }
 
@@ -172,12 +179,6 @@ impl<'cx> ZqCtx<'cx> {
         let api = zapi_singleton();
         let d = self.string(desc);
         ZqValue::from(unsafe { (api.new_symbol)(self.raw, d.raw()) })
-    }
-
-    /// The type of a JS value (`ZqType`).
-    pub fn get_value_type(&self, val: ZqValue<'cx>) -> ZqType {
-        let api = zapi_singleton();
-        unsafe { (api.get_value_type)(self.raw, val.raw()) }
     }
 
     /// Read a JS value as `f64` (ToNumber).

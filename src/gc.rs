@@ -4,9 +4,9 @@
 use std::ffi::c_void;
 
 use crate::{
-    __private::zapi_singleton,
     ZqError, ZqStatus,
     ffi::{ZqGcTraceCtxS, ZqRawValue},
+    zapi_singleton,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -32,10 +32,7 @@ impl ZqGcTraceCtx {
         let api = zapi_singleton();
         let r = unsafe { (api.gc_mark)(self.raw, val) };
         if r < 0 {
-            Err(ZqError::new(
-                ZqStatus::Error,
-                Some("gc_mark failed".into()),
-            ))
+            Err(ZqError::new(ZqStatus::Error, Some("gc_mark failed".into())))
         } else {
             Ok(())
         }
