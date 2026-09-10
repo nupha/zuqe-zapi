@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use crate::{
     __private::zapi_singleton,
     ZqCtx, ZqError,
-    ffi::{ZqCallbackInfoS, ZqRawValue, ZqType},
+    ffi::{ZqCallInfoS, ZqRawValue, ZqType},
     traits::{FromZqValue, IntoZqValue},
 };
 
@@ -106,14 +106,14 @@ impl<'cx> ZqValue<'cx> {
     /// Read the value as a Rust `String` (ToString).
     pub fn as_string(&self, cx: ZqCtx<'cx>) -> Result<String, ZqError> {
         let api = zapi_singleton();
-        let sval = unsafe { (api.value_to_string)(cx.env, self.raw) };
+        let sval = unsafe { (api.value_to_string)(cx.raw, self.raw) };
         Ok(cx.read_string(sval))
     }
 
     /// Read a symbol's description ("" for a description-less symbol).
     pub fn symbol_description(&self, cx: ZqCtx<'cx>) -> Result<String, ZqError> {
         let api = zapi_singleton();
-        let sval = unsafe { (api.get_symbol_description)(cx.env, self.raw) };
+        let sval = unsafe { (api.get_symbol_description)(cx.raw, self.raw) };
         Ok(cx.read_string(sval))
     }
 
@@ -126,7 +126,7 @@ impl<'cx> ZqValue<'cx> {
         let api = zapi_singleton();
         let key = key.into_zq_value(cx);
         Ok(ZqValue::from(unsafe {
-            (api.get_property)(cx.env, self.raw, key.raw())
+            (api.get_property)(cx.raw, self.raw, key.raw())
         }))
     }
 
@@ -140,7 +140,7 @@ impl<'cx> ZqValue<'cx> {
         let api = zapi_singleton();
         let key = key.into_zq_value(cx);
         let val = val.into_zq_value(cx);
-        unsafe { (api.set_property)(cx.env, self.raw, key.raw(), val.raw(), 0, 0) };
+        unsafe { (api.set_property)(cx.raw, self.raw, key.raw(), val.raw(), 0, 0) };
         Ok(())
     }
 
@@ -148,14 +148,14 @@ impl<'cx> ZqValue<'cx> {
     pub fn has<T: IntoZqValue<'cx>>(&self, cx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
         let api = zapi_singleton();
         let key = key.into_zq_value(cx);
-        Ok(unsafe { (api.has_property)(cx.env, self.raw, key.raw()) != 0 })
+        Ok(unsafe { (api.has_property)(cx.raw, self.raw, key.raw()) != 0 })
     }
 
     /// Delete a property.
     pub fn delete<T: IntoZqValue<'cx>>(&self, cx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
         let api = zapi_singleton();
         let key = key.into_zq_value(cx);
-        Ok(unsafe { (api.delete_property)(cx.env, self.raw, key.raw(), 0) != 0 })
+        Ok(unsafe { (api.delete_property)(cx.raw, self.raw, key.raw(), 0) != 0 })
     }
 
     /// Call the value as a function: `val(this, args...)`.
@@ -171,7 +171,7 @@ impl<'cx> ZqValue<'cx> {
     /// Array / typed-array length.
     pub fn array_len(&self, cx: ZqCtx<'cx>) -> Result<u32, ZqError> {
         let api = zapi_singleton();
-        let len = unsafe { (api.array_len)(cx.env, self.raw) };
+        let len = unsafe { (api.array_len)(cx.raw, self.raw) };
         Ok(cx.value_to_float64(ZqValue::from(len)) as u32)
     }
 
@@ -193,7 +193,7 @@ impl<'cx> ZqValue<'cx> {
     /// `Array.prototype.push`.
     pub fn array_push(&self, cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<(), ZqError> {
         let api = zapi_singleton();
-        unsafe { (api.array_push)(cx.env, self.raw, val.raw()) };
+        unsafe { (api.array_push)(cx.raw, self.raw, val.raw()) };
         Ok(())
     }
 
@@ -212,12 +212,12 @@ impl<'cx> ZqValue<'cx> {
 /// Safe wrapper around FFI callback info. Provides typed access to `this` and arguments.
 #[derive(Clone, Copy)]
 pub struct ZqCallInfo<'cx> {
-    pub(crate) raw: *mut ZqCallbackInfoS,
+    pub(crate) raw: *mut ZqCallInfoS,
     _marker: PhantomData<&'cx ()>,
 }
 
 impl<'cx> ZqCallInfo<'cx> {
-    pub fn new(raw: *mut ZqCallbackInfoS) -> Self {
+    pub fn new(raw: *mut ZqCallInfoS) -> Self {
         Self {
             raw,
             _marker: PhantomData,

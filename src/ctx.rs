@@ -5,8 +5,8 @@ use std::{marker::PhantomData, os::raw::c_void};
 
 use crate::{
     __private::zapi_singleton,
-    ZqEnv, ZqError, ZqStatus, ZqType, ZqValue,
-    ffi::{ZqCallbackInfoS, ZqClassDef, ZqEnvS, ZqJobRunFn, ZqRawValue, ZqWakeHandleS},
+    ZqError, ZqRawCtx, ZqStatus, ZqType, ZqValue,
+    ffi::{ZqCallInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue, ZqWakeHandleS},
 };
 
 /// Clonable, thread-safe handle to wake the JS event loop from any thread.
@@ -45,7 +45,7 @@ impl Drop for ZqWakeHandle {
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct ZqCtx<'cx> {
-    pub(crate) env: *mut ZqEnvS,
+    pub(crate) raw: ZqRawCtx,
     _marker: PhantomData<&'cx ()>,
 }
 
@@ -57,27 +57,24 @@ impl<'cx> Clone for ZqCtx<'cx> {
 }
 impl<'cx> Copy for ZqCtx<'cx> {}
 
-impl<'cx> ZqCtx<'cx> {
+impl<'cx> From<ZqRawCtx> for ZqCtx<'cx> {
     #[inline(always)]
-    pub fn from_raw(env: ZqEnv) -> Self {
+    fn from(raw: ZqRawCtx) -> Self {
         Self {
-            env,
+            raw,
             _marker: PhantomData,
         }
     }
+}
 
-    #[inline(always)]
-    pub const fn raw(&self) -> ZqEnv {
-        self.env
-    }
-
+impl<'cx> ZqCtx<'cx> {
     /// Capture a wake handle for this context's event loop. Call on the JS
     /// thread (inside a callback / job) and move the handle into whatever
     /// thread or task produces the async result.
     pub fn wake_handle(&self) -> ZqWakeHandle {
         let api = zapi_singleton();
         ZqWakeHandle {
-            raw: unsafe { (api.wake_handle_new)(self.env) },
+            raw: unsafe { (api.wake_handle_new)(self.raw) },
             wake_fn: api.wake_handle_wake,
             free_fn: api.wake_handle_free,
         }
@@ -100,7 +97,7 @@ impl<'cx> ZqCtx<'cx> {
         let trampoline: ZqJobRunFn = zq_poll_trampoline::<F>;
         unsafe {
             (zapi_singleton().add_polling_job)(
-                self.env,
+                self.raw,
                 trampoline,
                 None,
                 Box::into_raw(Box::new(job)).cast::<c_void>(),
@@ -110,7 +107,7 @@ impl<'cx> ZqCtx<'cx> {
 
     pub fn string(&self, s: &str) -> ZqValue<'cx> {
         let api = zapi_singleton();
-        unsafe { ZqValue::from((api.new_string_utf8)(self.env, s.as_ptr(), s.len())) }
+        unsafe { ZqValue::from((api.new_string_utf8)(self.raw, s.as_ptr(), s.len())) }
     }
 
     pub fn number(&self, n: f64) -> ZqValue<'cx> {
@@ -134,7 +131,7 @@ impl<'cx> ZqCtx<'cx> {
                 api.value_minus_infinity
             }
         } else {
-            unsafe { (api.new_number)(self.env, n) }
+            unsafe { (api.new_number)(self.raw, n) }
         };
 
         ZqValue::from(num)
@@ -157,15 +154,15 @@ impl<'cx> ZqCtx<'cx> {
 
     pub fn object(&self) -> ZqValue<'cx> {
         let api = zapi_singleton();
-        ZqValue::from(unsafe { (api.new_object)(self.env) })
+        ZqValue::from(unsafe { (api.new_object)(self.raw) })
     }
 
     pub fn array(&self, vals: &[ZqValue<'cx>]) -> ZqValue<'cx> {
         let api = zapi_singleton();
-        let arr = unsafe { (api.new_array)(self.env, vals.len()) };
+        let arr = unsafe { (api.new_array)(self.raw, vals.len()) };
         for (i, v) in vals.iter().enumerate() {
             let key = self.number(i as f64);
-            unsafe { (api.array_set)(self.env, arr, key.raw(), v.raw()) };
+            unsafe { (api.array_set)(self.raw, arr, key.raw(), v.raw()) };
         }
         ZqValue::from(arr)
     }
@@ -174,37 +171,37 @@ impl<'cx> ZqCtx<'cx> {
     pub fn symbol(&self, desc: &str) -> ZqValue<'cx> {
         let api = zapi_singleton();
         let d = self.string(desc);
-        ZqValue::from(unsafe { (api.new_symbol)(self.env, d.raw()) })
+        ZqValue::from(unsafe { (api.new_symbol)(self.raw, d.raw()) })
     }
 
     /// The type of a JS value (`ZqType`).
     pub fn get_value_type(&self, val: ZqValue<'cx>) -> ZqType {
         let api = zapi_singleton();
-        unsafe { (api.get_value_type)(self.env, val.raw()) }
+        unsafe { (api.get_value_type)(self.raw, val.raw()) }
     }
 
     /// Read a JS value as `f64` (ToNumber).
     pub fn value_to_float64(&self, val: ZqValue<'cx>) -> f64 {
         let api = zapi_singleton();
-        unsafe { (api.value_to_float64)(self.env, val.raw()) }
+        unsafe { (api.value_to_float64)(self.raw, val.raw()) }
     }
 
     /// Read a JS value as bool (ToBoolean).
     pub fn value_to_bool(&self, val: ZqValue<'cx>) -> bool {
         let api = zapi_singleton();
-        unsafe { (api.value_to_bool)(self.env, val.raw()) != 0 }
+        unsafe { (api.value_to_bool)(self.raw, val.raw()) != 0 }
     }
 
     /// Read the UTF-8 contents of a JS string value.
     pub fn read_string(&self, val: ZqRawValue) -> String {
         let api = zapi_singleton();
         // Measure-then-copy: a null buf returns the byte count; -1 = not a string.
-        let len = unsafe { (api.get_string_utf8)(self.env, val, std::ptr::null_mut(), 0, 0) };
+        let len = unsafe { (api.get_string_utf8)(self.raw, val, std::ptr::null_mut(), 0, 0) };
         if len <= 0 {
             return String::new();
         }
         let mut buf = vec![0u8; len as usize];
-        unsafe { (api.get_string_utf8)(self.env, val, buf.as_mut_ptr(), len as usize, 0) };
+        unsafe { (api.get_string_utf8)(self.raw, val, buf.as_mut_ptr(), len as usize, 0) };
         String::from_utf8_lossy(&buf).into_owned()
     }
 
@@ -213,7 +210,7 @@ impl<'cx> ZqCtx<'cx> {
         let api = zapi_singleton();
         let key = self.string(name);
         Ok(ZqValue::from(unsafe {
-            (api.get_global)(self.env, key.raw())
+            (api.get_global)(self.raw, key.raw())
         }))
     }
 
@@ -225,7 +222,7 @@ impl<'cx> ZqCtx<'cx> {
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
         let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
-        let mut info = ZqCallbackInfoS {
+        let mut info = ZqCallInfoS {
             target: target.raw(),
             this: 0,
             args: raw_args.as_ptr(),
@@ -233,7 +230,7 @@ impl<'cx> ZqCtx<'cx> {
             thrown: 0,
             magic: 0,
         };
-        let ret = unsafe { (api.call_constructor)(self.env, &mut info) };
+        let ret = unsafe { (api.call_constructor)(self.raw, &mut info) };
         if ret == api.value_exception {
             Err(ZqError::new(
                 ZqStatus::Exception,
@@ -263,7 +260,7 @@ impl<'cx> ZqCtx<'cx> {
         opaque: *mut std::ffi::c_void,
     ) -> Result<(), ZqError> {
         let api = zapi_singleton();
-        let r = unsafe { (api.set_gc_trace_func)(self.env, func, opaque) };
+        let r = unsafe { (api.set_gc_trace_func)(self.raw, func, opaque) };
         if r < 0 {
             Err(ZqError::new(
                 ZqStatus::Error,
@@ -274,19 +271,11 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
-    #[deprecated]
-    pub fn rt(&self) -> *mut std::ffi::c_void {
-        if self.env.is_null() {
-            return std::ptr::null_mut();
-        }
-        unsafe { (*self.env).rt }
-    }
-
     // ── class / instance helpers (requires GLOBAL_API) ──
 
     pub fn register_class(&self, def: &ZqClassDef) -> Result<i32, ZqError> {
         let api = zapi_singleton();
-        let r = unsafe { (api.register_class)(self.env, def) };
+        let r = unsafe { (api.register_class)(self.raw, def) };
         if r < 0 {
             Err(ZqError::new(
                 ZqStatus::Error,
@@ -304,7 +293,7 @@ impl<'cx> ZqCtx<'cx> {
         opaque: *mut std::ffi::c_void,
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
-        let r = unsafe { (api.new_instance)(self.env, def, opaque) };
+        let r = unsafe { (api.new_instance)(self.raw, def, opaque) };
         if r == 0 || r == api.value_exception {
             Err(ZqError::new(
                 ZqStatus::Exception,
@@ -317,7 +306,7 @@ impl<'cx> ZqCtx<'cx> {
 
     pub fn get_native_ptr(&self, val: ZqValue<'cx>) -> *mut std::ffi::c_void {
         let api = zapi_singleton();
-        unsafe { (api.get_native_ptr)(self.env, val.raw()) }
+        unsafe { (api.get_native_ptr)(self.raw, val.raw()) }
     }
 
     /// Calls a JS function with `this` and arguments, returning its result.
@@ -332,7 +321,7 @@ impl<'cx> ZqCtx<'cx> {
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
         let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
-        let mut info = ZqCallbackInfoS {
+        let mut info = ZqCallInfoS {
             target: target.raw(),
             this: this.raw(),
             args: raw_args.as_ptr(),
@@ -340,7 +329,7 @@ impl<'cx> ZqCtx<'cx> {
             thrown: 0,
             magic: 0,
         };
-        let ret = unsafe { (api.call_function)(self.env, &mut info) };
+        let ret = unsafe { (api.call_function)(self.raw, &mut info) };
         if ret == api.value_exception {
             Err(ZqError::new(
                 ZqStatus::Exception,
@@ -377,7 +366,7 @@ impl<'cx> ZqCtx<'cx> {
     /// Returns the exception value, or `undefined` if none is pending.
     pub fn exception(&self) -> ZqValue<'cx> {
         let api = zapi_singleton();
-        ZqValue::from(unsafe { (api.exception)(self.env) })
+        ZqValue::from(unsafe { (api.exception)(self.raw) })
     }
 
     /// Take the pending JS exception, clearing `cur_exception` and returning
@@ -385,7 +374,7 @@ impl<'cx> ZqCtx<'cx> {
     /// Returns `undefined` if no exception was pending.
     pub fn take_exception(&self) -> ZqValue<'cx> {
         let api = zapi_singleton();
-        ZqValue::from(unsafe { (api.take_exception)(self.env) })
+        ZqValue::from(unsafe { (api.take_exception)(self.raw) })
     }
 
     /// High-level one-shot async: run `work` on a dedicated thread, deliver
@@ -413,7 +402,7 @@ impl<'cx> ZqCtx<'cx> {
     {
         let api = zapi_singleton();
 
-        let promise = unsafe { (api.new_promise)(self.env) };
+        let promise = unsafe { (api.new_promise)(self.raw) };
         let (tx, rx) = self.make_wake_channel::<T>();
 
         std::thread::spawn(move || {
@@ -430,13 +419,13 @@ impl<'cx> ZqCtx<'cx> {
                 let c = convert
                     .take()
                     .expect("spawn_promise: convert consumed twice");
-                // env must be fresh — the context is transient across ticks.
-                let env = cx.raw();
+
+                // context must be fresh — it's transient across ticks.
                 match c(cx, t) {
-                    Ok(v) => unsafe { resolve_promise(env, promise, v.raw()) },
+                    Ok(v) => unsafe { resolve_promise(cx.raw, promise, v.raw()) },
                     Err(e) => {
                         let reason = cx.string(&e.to_string());
-                        unsafe { reject_promise(env, promise, reason.raw()) };
+                        unsafe { reject_promise(cx.raw, promise, reason.raw()) };
                     }
                 }
                 ZqPoll::Done
@@ -445,7 +434,7 @@ impl<'cx> ZqCtx<'cx> {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 // Worker ended without delivering — deterministic reject.
                 convert.take();
-                let env = cx.raw();
+                let env = cx.raw;
                 let reason = cx.string("async work dropped without a result");
                 unsafe { reject_promise(env, promise, reason.raw()) };
                 ZqPoll::Done
@@ -469,12 +458,12 @@ pub enum ZqPoll {
 }
 
 /// Trampoline: host calls this per tick with the boxed closure.
-unsafe extern "C" fn zq_poll_trampoline<F>(data: *mut c_void, env: ZqEnv) -> i32
+unsafe extern "C" fn zq_poll_trampoline<F>(data: *mut c_void, raw_ctx: ZqRawCtx) -> i32
 where
     F: FnMut(ZqCtx<'_>) -> ZqPoll + 'static,
 {
     let job = unsafe { &mut *(data as *mut F) };
-    let ctx = ZqCtx::from_raw(env);
+    let ctx = ZqCtx::from(raw_ctx);
 
     match job(ctx) {
         ZqPoll::Done => {

@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use crate::{__private::zapi_singleton, ZqCtx, ZqEnv, ZqError, ZqRawValue, ZqValue};
+use crate::{__private::zapi_singleton, ZqCtx, ZqError, ZqRawCtx, ZqRawValue, ZqValue};
 
 /// Result of fetching the next value from an async iterator.
 pub enum AsyncIterResult<'a> {
@@ -23,7 +23,7 @@ impl<'cx> ZqCtx<'cx> {
         let api = zapi_singleton();
         let raw = unsafe {
             (api.new_async_iterator)(
-                self.env,
+                self.raw,
                 async_iter_next_trampoline::<T>,
                 None,
                 Some(drop_boxed::<T>),
@@ -39,11 +39,11 @@ impl<'cx> ZqCtx<'cx> {
 }
 
 extern "C" fn async_iter_next_trampoline<T: ZqAsyncIterable>(
-    env: ZqEnv,
+    raw_ctx: ZqRawCtx,
     opaque: *mut c_void,
     ret_val: *mut ZqRawValue,
 ) -> i32 {
-    let ctx = ZqCtx::from_raw(env);
+    let ctx = ZqCtx::from(raw_ctx);
     let iter = unsafe { &mut *(opaque as *mut T) };
 
     match iter.next(ctx) {

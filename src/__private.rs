@@ -8,8 +8,8 @@ pub use crate::{
     ctx::ZqCtx,
     error::ZqError,
     ffi::{
-        ZQ_VERSION_PACKED, ZqApi, ZqCallbackInfoS, ZqClassDef, ZqEnv, ZqEnvS, ZqFieldDef,
-        ZqFieldValueFn, ZqModuleInfo, ZqRawValue,
+        ZQ_VERSION_PACKED, ZqApi, ZqCallInfoS, ZqClassDef, ZqFieldDef, ZqFieldValueFn,
+        ZqModuleInfo, ZqRawCtx, ZqRawValue,
     },
     traits::{FromZqValue, IntoZqValue},
     value::ZqValue,
@@ -17,15 +17,13 @@ pub use crate::{
 
 /// C-compatible callback function pointer (ABI-compatible with ZqApi body functions).
 /// Returns the JS result value, or `value_exception` on error.
-pub type ZqCallback = unsafe extern "C" fn(env: ZqEnv, info: ZqCallbackInfo) -> ZqRawValue;
+pub type ZqCallbackFn = unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS) -> ZqRawValue;
 
 /// The host's exception sentinel handle (`ZqApi.value_exception`). Trampolines
 /// return it to signal "this call threw".
 pub fn exception_value() -> ZqRawValue {
     zapi_singleton().value_exception
 }
-/// Opaque callback-info handle (passed to callback functions).
-pub type ZqCallbackInfo = *mut ZqCallbackInfoS;
 
 thread_local! {
     static ZAPI_SINGLETON: Cell<*const ZqApi> = const { Cell::new(std::ptr::null()) };

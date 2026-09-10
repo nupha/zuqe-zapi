@@ -21,7 +21,7 @@ pub use {
     class::Class,
     ctx::{ZqCtx, ZqWakeHandle},
     error::{ZqError, ZqStatus},
-    ffi::{ZqEnv, ZqFieldDef, ZqRawValue, ZqType},
+    ffi::{ZqFieldDef, ZqRawCtx, ZqRawValue, ZqType},
     gc::{ZqGcTrace, ZqGcTraceCtx},
     iter::{AsyncIterResult, ZqAsyncIterable},
     traits::{FromZqValue, IntoZqValue},
