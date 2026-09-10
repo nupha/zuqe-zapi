@@ -181,10 +181,12 @@ impl<'cx> ZqCtx<'cx> {
     /// Look up a property on the global object (`globalThis[name]`).
     pub fn get_global(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
-        let key = self.new_string(name)?;
-        Ok(ZqValue::from(unsafe {
-            (api.get_global)(self.raw, key.raw())
-        }))
+        let v = unsafe { (api.get_global_str)(self.raw, name.as_ptr(), name.len()) };
+        if v == api.value_exception {
+            Err(ZqError)
+        } else {
+            Ok(ZqValue::from(v))
+        }
     }
 
     /// Invoke `target` as a constructor: `new target(...args)`.

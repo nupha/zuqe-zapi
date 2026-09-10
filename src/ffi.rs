@@ -723,4 +723,50 @@ pub struct ZqApi {
     pub wake_handle_new: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqWakeHandleS,
     pub wake_handle_wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
     pub wake_handle_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
+
+    // ── str-keyed property access ──
+    // Same semantics as the `ZqRawValue`-keyed counterparts above, but the key
+    // is passed as UTF-8 `(ptr, len)`. The host resolves it to an interned atom
+    // **without allocating an intermediate JS string**, so repeated access with
+    // a literal key is allocation-free. This is the key-access fast path.
+    /// `get_property` with a UTF-8 key. Returns `value_exception` on error.
+    pub get_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+    ) -> ZqRawValue,
+
+    /// `set_property` with a UTF-8 key. `val` is a raw handle.
+    /// returns 1=set, 0=not set, -1=error
+    pub set_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+        val: ZqRawValue,
+        throw: i32,
+        flags: u32,
+    ) -> i32,
+
+    /// `has_property` with a UTF-8 key. 1=present, 0=absent, -1=error.
+    pub has_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+    ) -> i32,
+
+    /// `delete_property` with a UTF-8 key. 1=deleted, 0=not deleted, -1=error.
+    pub delete_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+        throw: i32,
+    ) -> i32,
+
+    /// `get_global` with a UTF-8 name. Returns `value_exception` on error.
+    pub get_global_str:
+        unsafe extern "C" fn(env: ZqRawCtx, name: *const u8, name_len: usize) -> ZqRawValue,
 }

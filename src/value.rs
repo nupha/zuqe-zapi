@@ -254,10 +254,16 @@ impl<'cx> ZqValue<'cx> {
         }
     }
 
-    /// Get a property (works for objects, arrays, typed arrays, ...).
+    /// Get a property by UTF-8 key without allocating an intermediate JS
+    /// string (the host resolves the key to an interned atom).
     pub fn get_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<ZqValue<'cx>, ZqError> {
-        let s = ctx.new_string(key)?;
-        self.get(ctx, s)
+        let api = ZqApi::singleton();
+        let v = unsafe { (api.get_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
+        if v == api.value_exception {
+            Err(ZqError)
+        } else {
+            Ok(ZqValue::from(v))
+        }
     }
 
     /// Set a property.
@@ -274,15 +280,19 @@ impl<'cx> ZqValue<'cx> {
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
-    /// Set a property.
+    /// Set a property by UTF-8 key without allocating an intermediate JS string.
     pub fn set_str<V: IntoZqValue<'cx>>(
         &self,
         ctx: ZqCtx<'cx>,
         key: &str,
         val: V,
     ) -> Result<bool, ZqError> {
-        let s = ctx.new_string(key)?;
-        self.set(ctx, s, val)
+        let api = ZqApi::singleton();
+        let val = val.into_zq_value(ctx);
+        let r = unsafe {
+            (api.set_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len(), val.raw(), 0, 0)
+        };
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Check whether a property exists.
@@ -293,10 +303,11 @@ impl<'cx> ZqValue<'cx> {
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
-    /// Check whether a property exists.
+    /// Check whether a property exists (UTF-8 key, no intermediate JS string).
     pub fn has_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
-        let s = ctx.new_string(key)?;
-        self.has(ctx, s)
+        let api = ZqApi::singleton();
+        let r = unsafe { (api.has_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Delete a property.
@@ -307,13 +318,15 @@ impl<'cx> ZqValue<'cx> {
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
+    /// Delete a property by UTF-8 key without allocating an intermediate JS string.
     pub fn delete_str<T: IntoZqValue<'cx>>(
         &self,
         ctx: ZqCtx<'cx>,
         key: &str,
     ) -> Result<bool, ZqError> {
-        let s = ctx.new_string(key)?;
-        self.delete(ctx, s)
+        let api = ZqApi::singleton();
+        let r = unsafe { (api.delete_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len(), 0) };
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Get length property of value
