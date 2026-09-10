@@ -53,11 +53,13 @@ pub const ZQ_VALUE_TYPE_BIGINT: i32 = 8;
 /// The exception sentinel (`value_exception`); not a normal JS value.
 pub const ZQ_VALUE_TYPE_EXCEPTION: i32 = 9;
 
-/// ABI representation of an engine value (GC node handle). **Not a newtype** — a raw `u64` type alias.
-pub type ZqRawValue = u64;
+pub struct ZqRawCtxS([u8; 0]);
 
 /// Raw FFI handle for execution context.
-pub type ZqRawCtx = *mut c_void;
+pub type ZqRawCtx = *mut ZqRawCtxS;
+
+/// ABI representation of an engine value (GC node handle). **Not a newtype** — a raw `u64` type alias.
+pub type ZqRawValue = u64;
 
 /// Callback info containing target / this / args / exception value / magic.
 ///
@@ -545,7 +547,8 @@ pub struct ZqApi {
     /// the extension should hand to JS.
     pub value_exception: ZqRawValue,
 
-    pub new_number: unsafe extern "C" fn(env: ZqRawCtx, n: f64) -> ZqRawValue,
+    pub new_number: unsafe extern "C" fn(n: f64) -> ZqRawValue,
+
     /// Construct a JS string from **UTF-8 encoded bytes** (`ptr`/`len` must be
     /// valid UTF-8; the host does not validate — invalid sequences are handled
     /// per engine policy). Paired with `get_string_utf8`: reads and writes UTF-8.
@@ -554,7 +557,8 @@ pub struct ZqApi {
         unsafe extern "C" fn(env: ZqRawCtx, ptr: *const u8, len: usize) -> ZqRawValue,
     pub new_symbol: unsafe extern "C" fn(env: ZqRawCtx, desc: ZqRawValue) -> ZqRawValue,
     pub new_object: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
-    pub new_array: unsafe extern "C" fn(env: ZqRawCtx, len: usize) -> ZqRawValue,
+    pub new_array:
+        unsafe extern "C" fn(env: ZqRawCtx, elements: *const ZqRawValue, len: usize) -> ZqRawValue,
 
     /// Copy UTF-8 bytes of string `s` into `buf`, starting at `offset` bytes.
     ///
@@ -571,37 +575,39 @@ pub struct ZqApi {
         buf_len: usize,
         offset: usize,
     ) -> i32,
+
     pub get_symbol_description: unsafe extern "C" fn(env: ZqRawCtx, sym: ZqRawValue) -> ZqRawValue,
 
+    pub get_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
+
+    /// returns 1=set, 0=not set, -1=error
     pub set_property: unsafe extern "C" fn(
         env: ZqRawCtx,
-        obj: ZqRawValue,
+        target: ZqRawValue,
         key: ZqRawValue,
         val: ZqRawValue,
         throw: i32,
         flags: u32,
-    ) -> ZqRawValue,
-    pub get_property:
-        unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
-    /// Check whether a property exists on `obj`. Returns 1 if present, 0 otherwise.
-    pub has_property: unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue, key: ZqRawValue) -> i32,
-    /// Delete a property from `obj`. Returns 1 on success, 0 if the property
-    /// does not exist or cannot be deleted. `throw` controls whether a JS
-    /// exception is thrown on failure (1 = throw, 0 = silent).
-    pub delete_property:
-        unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue, key: ZqRawValue, throw: i32) -> i32,
-
-    /// Append `val` to the end of array `arr`. Returns 0 on success, <0 on error.
-    pub array_push: unsafe extern "C" fn(env: ZqRawCtx, arr: ZqRawValue, val: ZqRawValue) -> i32,
-    /// Set `arr[idx] = val`. Returns 0 on success, <0 on error (out of bounds,
-    /// not an array, etc.).
-    pub array_set: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        arr: ZqRawValue,
-        idx: ZqRawValue,
-        val: ZqRawValue,
     ) -> i32,
-    pub array_len: unsafe extern "C" fn(env: ZqRawCtx, arr: ZqRawValue) -> ZqRawValue,
+
+    /// Check whether a property exists on `target`.
+    /// Returns 1 if present, 0 if not present, -1 if error.
+    pub has_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
+
+    /// Delete a property from `obj`. Returns 1 on success, 0 if the property
+    /// does not exist or cannot be deleted, -1 if error.
+    /// `throw` controls whether a JS exception is thrown on failure (1 = throw, 0 = silent).
+    pub delete_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue, throw: i32) -> i32,
+
+    /// Get target's length property. return: minus for error, otherwise the length
+    pub get_length_prop: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue) -> i64,
+
+    /// push an element to Array.
+    /// returns minus for error, otherwise for new length
+    pub array_push: unsafe extern "C" fn(env: ZqRawCtx, arr: ZqRawValue, val: ZqRawValue) -> i64,
 
     pub get_global: unsafe extern "C" fn(env: ZqRawCtx, name: ZqRawValue) -> ZqRawValue,
 

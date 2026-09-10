@@ -81,44 +81,32 @@ impl<'cx> IntoZqValue<'cx> for ZqValue<'cx> {
 }
 
 impl<'cx> IntoZqValue<'cx> for ZqRawValue {
-    fn into_zq_value(self, _cx: ZqCtx<'cx>) -> ZqValue<'cx> {
+    fn into_zq_value(self, _: ZqCtx<'cx>) -> ZqValue<'cx> {
         ZqValue::from(self)
     }
 }
 
 impl<'cx> IntoZqValue<'cx> for i32 {
-    fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx> {
-        cx.number(self as f64)
+    fn into_zq_value(self, _: ZqCtx<'cx>) -> ZqValue<'cx> {
+        ZqValue::number(self as f64)
     }
 }
 
 impl<'cx> IntoZqValue<'cx> for i64 {
-    fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx> {
-        cx.number(self as f64)
+    fn into_zq_value(self, _: ZqCtx<'cx>) -> ZqValue<'cx> {
+        ZqValue::number(self as f64)
     }
 }
 
 impl<'cx> IntoZqValue<'cx> for f64 {
-    fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx> {
-        cx.number(self)
+    fn into_zq_value(self, _: ZqCtx<'cx>) -> ZqValue<'cx> {
+        ZqValue::number(self)
     }
 }
 
 impl<'cx> IntoZqValue<'cx> for bool {
-    fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx> {
-        cx.bool(self)
-    }
-}
-
-impl<'cx> IntoZqValue<'cx> for &str {
-    fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx> {
-        cx.string(self)
-    }
-}
-
-impl<'cx> IntoZqValue<'cx> for String {
-    fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx> {
-        cx.string(&self)
+    fn into_zq_value(self, _: ZqCtx<'cx>) -> ZqValue<'cx> {
+        ZqValue::bool(self)
     }
 }
 
@@ -126,7 +114,7 @@ impl<'cx, T: IntoZqValue<'cx>> IntoZqValue<'cx> for Option<T> {
     fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx> {
         match self {
             Some(v) => v.into_zq_value(cx),
-            None => cx.undefined(),
+            None => ZqValue::undefined(),
         }
     }
 }

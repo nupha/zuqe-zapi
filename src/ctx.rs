@@ -112,73 +112,46 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
-    pub fn string(&self, s: &str) -> ZqValue<'cx> {
+    pub fn new_string(&self, s: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
-        unsafe { ZqValue::from((api.new_string_utf8)(self.raw, s.as_ptr(), s.len())) }
-    }
-
-    pub fn number(&self, n: f64) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        // Common fixed numbers come straight from the table constants
-        // (identical handles to `new_number`, minus the FFI call).
-        // Note `-0.0` is a distinct float and must fall through to
-        // `new_number` to keep its sign.
-        let num = if n.is_nan() {
-            api.value_nan
-        } else if n == 1.0 {
-            api.value_one
-        } else if n == -1.0 {
-            api.value_negative_one
-        } else if n == 0.0 && n.is_sign_positive() {
-            api.value_zero
-        } else if n.is_infinite() {
-            if n.is_sign_positive() {
-                api.value_infinity
-            } else {
-                api.value_minus_infinity
-            }
+        let s = unsafe { (api.new_string_utf8)(self.raw, s.as_ptr(), s.len()) };
+        if s == api.value_exception {
+            Err(ZqError::from(ZqStatus::Exception))
         } else {
-            unsafe { (api.new_number)(self.raw, n) }
-        };
-
-        ZqValue::from(num)
-    }
-
-    pub fn bool(&self, b: bool) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        ZqValue::from(if b { api.value_true } else { api.value_false })
-    }
-
-    pub fn undefined(&self) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        ZqValue::from(api.value_undefined)
-    }
-
-    pub fn null(&self) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        ZqValue::from(api.value_null)
-    }
-
-    pub fn object(&self) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        ZqValue::from(unsafe { (api.new_object)(self.raw) })
-    }
-
-    pub fn array(&self, vals: &[ZqValue<'cx>]) -> ZqValue<'cx> {
-        let api = zapi_singleton();
-        let arr = unsafe { (api.new_array)(self.raw, vals.len()) };
-        for (i, v) in vals.iter().enumerate() {
-            let key = self.number(i as f64);
-            unsafe { (api.array_set)(self.raw, arr, key.raw(), v.raw()) };
+            Ok(ZqValue::from(s))
         }
-        ZqValue::from(arr)
+    }
+
+    pub fn new_object(&self) -> Result<ZqValue<'cx>, ZqError> {
+        let api = zapi_singleton();
+        let v = unsafe { (api.new_object)(self.raw) };
+        if v == api.value_exception {
+            Err(ZqError::from(ZqStatus::Exception))
+        } else {
+            Ok(ZqValue::from(v))
+        }
+    }
+
+    pub fn new_array(&self, elements: &[ZqRawValue]) -> Result<ZqValue<'cx>, ZqError> {
+        let api = zapi_singleton();
+        let arr = unsafe { (api.new_array)(self.raw, elements.as_ptr(), elements.len()) };
+        if arr == api.value_exception {
+            Err(ZqError::from(ZqStatus::Exception))
+        } else {
+            Ok(ZqValue::from(arr))
+        }
     }
 
     /// Create a JS `Symbol(desc)`.
-    pub fn symbol(&self, desc: &str) -> ZqValue<'cx> {
+    pub fn new_symbol(&self, desc: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
-        let d = self.string(desc);
-        ZqValue::from(unsafe { (api.new_symbol)(self.raw, d.raw()) })
+        let d = self.new_string(desc)?;
+        let v = unsafe { (api.new_symbol)(self.raw, d.raw()) };
+        if v == api.value_exception {
+            Err(ZqError::from(ZqStatus::Exception))
+        } else {
+            Ok(ZqValue::from(v))
+        }
     }
 
     /// Read a JS value as `f64` (ToNumber).
@@ -209,7 +182,7 @@ impl<'cx> ZqCtx<'cx> {
     /// Look up a property on the global object (`globalThis[name]`).
     pub fn get_global(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = zapi_singleton();
-        let key = self.string(name);
+        let key = self.new_string(name)?;
         Ok(ZqValue::from(unsafe {
             (api.get_global)(self.raw, key.raw())
         }))
@@ -345,6 +318,8 @@ impl<'cx> ZqCtx<'cx> {
     /// Used by macro trampolines to throw proper JS errors when `ZqError`
     /// carries a message but no pre-built exception handle.
     pub fn throw_error(&self, err: &ZqError) -> ZqRawValue {
+        //todo!("add new api throw_error");
+
         let name = match err.status() {
             ZqStatus::TypeError => "TypeError",
             ZqStatus::RangeError => "RangeError",
@@ -352,11 +327,11 @@ impl<'cx> ZqCtx<'cx> {
         };
         let msg = err.message().unwrap_or("");
 
-        if let Ok(ctor) = self.get_global(name) {
-            let msg_val = self.string(msg);
-            if let Ok(obj) = self.call_constructor(ctor, &[msg_val]) {
-                return obj.raw();
-            }
+        if let Ok(ctor) = self.get_global(name)
+            && let Ok(msg_val) = self.new_string(msg)
+            && let Ok(obj) = self.call_constructor(ctor, &[msg_val])
+        {
+            return obj.raw();
         }
 
         // Fallback: return exception sentinel
@@ -425,7 +400,7 @@ impl<'cx> ZqCtx<'cx> {
                 match c(cx, t) {
                     Ok(v) => unsafe { resolve_promise(cx.raw, promise, v.raw()) },
                     Err(e) => {
-                        let reason = cx.string(&e.to_string());
+                        let reason = cx.new_string(&e.to_string()).unwrap();
                         unsafe { reject_promise(cx.raw, promise, reason.raw()) };
                     }
                 }
@@ -435,9 +410,11 @@ impl<'cx> ZqCtx<'cx> {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 // Worker ended without delivering — deterministic reject.
                 convert.take();
-                let env = cx.raw;
-                let reason = cx.string("async work dropped without a result");
-                unsafe { reject_promise(env, promise, reason.raw()) };
+
+                let reason = cx
+                    .new_string("async work dropped without a result")
+                    .unwrap();
+                unsafe { reject_promise(cx.raw, promise, reason.raw()) };
                 ZqPoll::Done
             }
         });
