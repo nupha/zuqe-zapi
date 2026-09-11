@@ -36,10 +36,13 @@ pub const ZQ_FIELD_BOOL: u8 = 7;
 pub const ZQ_FIELD_UNDEFINED: u8 = 8;
 // reserved (phase 2): ZQ_FIELD_OBJECT = 9, ZQ_FIELD_ALIAS = 10
 
-// ── property flags (mirror zuqe `JS_PROP_*`) ──
+// ── property flags ──
 pub const ZQ_PROP_CONFIGURABLE: u32 = 1;
 pub const ZQ_PROP_WRITABLE: u32 = 1 << 1;
 pub const ZQ_PROP_ENUMERABLE: u32 = 1 << 2;
+/// C_W_E = configurable | writable | enumerable (fast conversion of a plain
+/// data-property descriptor); used by `ZqFieldDef.prop_flags`.
+pub const ZQ_PROP_C_W_E: u32 = ZQ_PROP_CONFIGURABLE | ZQ_PROP_WRITABLE | ZQ_PROP_ENUMERABLE;
 
 pub const ZQ_VALUE_TYPE_UNDEFINED: i32 = 0;
 pub const ZQ_VALUE_TYPE_NULL: i32 = 1;
@@ -588,6 +591,21 @@ pub struct ZqApi {
     /// Get a property from the global object by UTF-8 name.
     pub get_global_str:
         unsafe extern "C" fn(env: ZqRawCtx, name: *const u8, name_len: usize) -> ZqRawValue,
+    /// Set a property on the global object by raw value key.
+    /// `flags` is a `ZQ_PROP_C_W_E` bitmask for the property descriptor.
+    /// The host throws in strict mode automatically.
+    /// Returns 1=set, 0=not set, -1=error.
+    pub set_global: unsafe extern "C" fn(env: ZqRawCtx, name: ZqRawValue, val: ZqRawValue) -> i32,
+    /// Set a property on the global object by UTF-8 name.
+    /// `flags` is a `ZQ_PROP_C_W_E` bitmask.
+    /// The host throws in strict mode automatically.
+    /// Returns 1=set, 0=not set, -1=error.
+    pub set_global_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        name: *const u8,
+        name_len: usize,
+        val: ZqRawValue,
+    ) -> i32,
 
     // ── function call ──
     /// Call a JS function with `this` and arguments.
@@ -615,6 +633,68 @@ pub struct ZqApi {
         magic: i32,
     ) -> ZqRawValue,
 
+    // ── property access (ZqRawValue key) ──
+    /// Get a property by raw value key.
+    pub get_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
+    /// Set a property by raw value key. `flags` is a `ZQ_PROP_C_W_E` bitmask
+    /// for the property descriptor. The host throws in strict mode
+    /// automatically; the caller cannot control this.
+    /// Returns 1=set, 0=not set, -1=error.
+    pub set_property: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: ZqRawValue,
+        val: ZqRawValue,
+    ) -> i32,
+    /// Check whether a property exists. Returns 1 if present, 0 if not, -1 if error.
+    pub has_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
+    /// Delete a property. Returns 1=deleted, 0=not deleted, -1=error.
+    pub delete_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
+
+    // ── property access (UTF-8 key, fast-path) ──
+    // Same semantics as the `ZqRawValue`-keyed counterparts, but the key is
+    // passed as UTF-8 `(ptr, len)`. The host resolves it to an interned atom
+    // **without allocating an intermediate JS string**, so repeated access with
+    // a literal key is allocation-free.
+    /// Get a property by UTF-8 key. Returns exception sentinel on error.
+    pub get_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+    ) -> ZqRawValue,
+    /// Set a property by UTF-8 key. `flags` is a `ZQ_PROP_C_W_E` bitmask.
+    /// The host throws in strict mode automatically.
+    /// Returns 1=set, 0=not set, -1=error.
+    pub set_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+        val: ZqRawValue,
+    ) -> i32,
+    /// Check whether a property exists by UTF-8 key. 1=present, 0=absent, -1=error.
+    pub has_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+    ) -> i32,
+    /// Delete a property by UTF-8 key. 1=deleted, 0=not deleted, -1=error.
+    /// The host throws in strict mode automatically.
+    pub delete_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+    ) -> i32,
+
+    /// Get target's length property. Returns -1 for error, otherwise the length.
+    pub get_length_prop: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue) -> i64,
+
     // ── value constructors ──
     /// Construct a JS number from f64.
     pub new_number: unsafe extern "C" fn(n: f64) -> ZqRawValue,
@@ -635,10 +715,13 @@ pub struct ZqApi {
     // ── value query / conversion ──
     /// The type of a JS value, see `ZQ_VALUE_TYPE_*` constants.
     pub value_get_type: unsafe extern "C" fn(val: ZqRawValue) -> i32,
-    /// Coerce a JS value to an f64 number (ToNumber; NaN for non-numeric).
-    pub value_to_float64: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> f64,
-    /// Coerce a JS value to a boolean (ToBoolean; 1 if truthy, 0 otherwise).
+    /// Coerce a JS value to a boolean (ToBoolean; 1=true, 0=false, -1=error).
     pub value_to_bool: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> i32,
+    /// Coerce a JS value to an i64 number. return 0=ok, -1=error
+    pub value_to_int64: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue, ret: *mut i64) -> i32,
+    /// Coerce a JS value to an f64 number. return 0=ok, -1=error
+    pub value_to_float64:
+        unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue, ret: *mut f64) -> i32,
     /// Coerce a JS value to a JS string (ToString; a string handle).
     pub value_to_string: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> ZqRawValue,
 
@@ -650,77 +733,16 @@ pub struct ZqApi {
     /// * `buf != null`: copies `min(buf_len, remaining bytes)` bytes, returns the
     ///   actual number copied;
     /// * returns `-1` if `s` is not a string.
-    pub string_get_utf8: unsafe extern "C" fn(
+    pub string_read_utf8: unsafe extern "C" fn(
         env: ZqRawCtx,
         s: ZqRawValue,
         buf: *mut u8,
         buf_len: usize,
         offset: usize,
     ) -> i32,
+
     /// Read the description of a JS Symbol value.
     pub symbol_get_description: unsafe extern "C" fn(env: ZqRawCtx, sym: ZqRawValue) -> ZqRawValue,
-
-    // ── property access (ZqRawValue key) ──
-    /// Get a property by raw value key.
-    pub get_property:
-        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
-    /// Set a property by raw value key. Returns 1=set, 0=not set, -1=error.
-    pub set_property: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        key: ZqRawValue,
-        val: ZqRawValue,
-        throw: i32,
-        flags: u32,
-    ) -> i32,
-    /// Check whether a property exists. Returns 1 if present, 0 if not, -1 if error.
-    pub has_property:
-        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
-    /// Delete a property. `throw` controls whether a JS exception is thrown on
-    /// failure (1 = throw, 0 = silent). Returns 1=deleted, 0=not deleted, -1=error.
-    pub delete_property:
-        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue, throw: i32) -> i32,
-
-    // ── property access (UTF-8 key, fast-path) ──
-    // Same semantics as the `ZqRawValue`-keyed counterparts, but the key is
-    // passed as UTF-8 `(ptr, len)`. The host resolves it to an interned atom
-    // **without allocating an intermediate JS string**, so repeated access with
-    // a literal key is allocation-free.
-    /// Get a property by UTF-8 key. Returns exception sentinel on error.
-    pub get_property_str: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        key: *const u8,
-        key_len: usize,
-    ) -> ZqRawValue,
-    /// Set a property by UTF-8 key. Returns 1=set, 0=not set, -1=error.
-    pub set_property_str: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        key: *const u8,
-        key_len: usize,
-        val: ZqRawValue,
-        throw: i32,
-        flags: u32,
-    ) -> i32,
-    /// Check whether a property exists by UTF-8 key. 1=present, 0=absent, -1=error.
-    pub has_property_str: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        key: *const u8,
-        key_len: usize,
-    ) -> i32,
-    /// Delete a property by UTF-8 key. 1=deleted, 0=not deleted, -1=error.
-    pub delete_property_str: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        key: *const u8,
-        key_len: usize,
-        throw: i32,
-    ) -> i32,
-
-    /// Get target's length property. Returns -1 for error, otherwise the length.
-    pub get_length_prop: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue) -> i64,
 
     // ── array ──
     /// Push an element to an Array. Returns -1 for error, otherwise the new length.

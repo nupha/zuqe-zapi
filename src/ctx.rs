@@ -156,39 +156,54 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
-    /// Read a JS value as `f64` (ToNumber).
-    pub fn value_to_float64(&self, val: ZqValue<'cx>) -> f64 {
-        let api = ZqApi::singleton();
-        unsafe { (api.value_to_float64)(self.raw, val.raw()) }
-    }
-
-    /// Read a JS value as bool (ToBoolean).
-    pub fn value_to_bool(&self, val: ZqValue<'cx>) -> bool {
-        let api = ZqApi::singleton();
-        unsafe { (api.value_to_bool)(self.raw, val.raw()) != 0 }
-    }
-
-    /// Read the UTF-8 contents of a JS string value.
-    pub fn read_string(&self, val: ZqRawValue) -> String {
-        let api = ZqApi::singleton();
-        // Measure-then-copy: a null buf returns the byte count; -1 = not a string.
-        let len = unsafe { (api.string_get_utf8)(self.raw, val, std::ptr::null_mut(), 0, 0) };
-        if len <= 0 {
-            return String::new();
-        }
-        let mut buf = vec![0u8; len as usize];
-        unsafe { (api.string_get_utf8)(self.raw, val, buf.as_mut_ptr(), len as usize, 0) };
-        String::from_utf8_lossy(&buf).into_owned()
-    }
-
     /// Look up a property on the global object (`globalThis[name]`).
-    pub fn get_global(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
+    pub fn get_global_str(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let v = unsafe { (api.get_global_str)(self.raw, name.as_ptr(), name.len()) };
         if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
+        }
+    }
+
+    /// Assign a property on the global object (`globalThis[name] = val`).
+    /// Returns whether the assignment applied (false on a silent no-op).
+    pub fn set_global_str<V: crate::traits::IntoZqValue<'cx>>(
+        &self,
+        name: &str,
+        val: V,
+    ) -> Result<bool, ZqError> {
+        let api = ZqApi::singleton();
+        let val = val.into_zq_value(*self);
+        let r = unsafe { (api.set_global_str)(self.raw, name.as_ptr(), name.len(), val.raw()) };
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
+    }
+
+    /// Calls a JS function with `this` and arguments, returning its result.
+    ///
+    /// The host hands every argument (numbers included) to extension callbacks
+    /// as proper engine JSValues, so they are forwarded unchanged.
+    pub fn call_function(
+        &self,
+        target: ZqValue<'cx>,
+        this: ZqValue,
+        args: &[ZqValue],
+    ) -> Result<ZqValue<'cx>, ZqError> {
+        let api = ZqApi::singleton();
+        let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
+        let mut info = ZqCallInfoS {
+            target: target.raw(),
+            this: this.raw(),
+            args: raw_args.as_ptr(),
+            argc: raw_args.len() as u32,
+            magic: 0,
+        };
+        let ret = unsafe { (api.call_function)(self.raw, &mut info) };
+        if ret == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
+            Err(ZqError)
+        } else {
+            Ok(ZqValue::from(ret))
         }
     }
 
@@ -250,10 +265,10 @@ impl<'cx> ZqCtx<'cx> {
     pub fn new_instance(
         &self,
         def: &ZqClassDef,
-        opaque: *mut std::ffi::c_void,
+        payload: *mut std::ffi::c_void,
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
-        let r = unsafe { (api.new_instance)(self.raw, def, opaque) };
+        let r = unsafe { (api.new_instance)(self.raw, def, payload) };
         if r == 0 || r == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -264,33 +279,6 @@ impl<'cx> ZqCtx<'cx> {
     pub fn get_native_ptr(&self, val: ZqValue<'cx>) -> *mut std::ffi::c_void {
         let api = ZqApi::singleton();
         unsafe { (api.get_native_ptr)(self.raw, val.raw()) }
-    }
-
-    /// Calls a JS function with `this` and arguments, returning its result.
-    ///
-    /// The host hands every argument (numbers included) to extension callbacks
-    /// as proper engine JSValues, so they are forwarded unchanged.
-    pub fn call_function(
-        &self,
-        target: ZqValue<'cx>,
-        this: ZqValue,
-        args: &[ZqValue],
-    ) -> Result<ZqValue<'cx>, ZqError> {
-        let api = ZqApi::singleton();
-        let raw_args: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
-        let mut info = ZqCallInfoS {
-            target: target.raw(),
-            this: this.raw(),
-            args: raw_args.as_ptr(),
-            argc: raw_args.len() as u32,
-            magic: 0,
-        };
-        let ret = unsafe { (api.call_function)(self.raw, &mut info) };
-        if ret == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
-            Err(ZqError)
-        } else {
-            Ok(ZqValue::from(ret))
-        }
     }
 
     /// High-level one-shot async: run `work` on a dedicated thread, deliver

@@ -15,7 +15,7 @@ pub use crate::{
         ZQ_VERSION_PACKED, ZqApi, ZqCallInfoS, ZqClassDef, ZqFieldDef, ZqFieldValueFn,
         ZqModuleInfo, ZqRawCtx, ZqRawValue,
     },
-    traits::{FromZqValue, IntoZqValue},
+    traits::IntoZqValue,
     value::ZqValue,
 };
 

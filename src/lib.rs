@@ -24,7 +24,7 @@ pub use {
     ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue},
     gc::{ZqGcTrace, ZqGcTraceCtx},
     iter::{AsyncIterResult, ZqAsyncIterable},
-    traits::{FromZqValue, IntoZqValue},
+    traits::IntoZqValue,
     value::{ZqCallInfo, ZqValue, ZqValueType},
 };
 

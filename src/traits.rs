@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
 
-use crate::{ZqCtx, ZqError, ZqValue, ffi::ZqRawValue};
-
-/// Unwrap a JS value into a Rust type.
-///
-/// Used by `#[zq_function]` parameter unpacking. On failure, call
-/// `throw_type_error` and return `Err`.
-pub trait FromZqValue<'cx>: Sized {
-    fn from_zq_value(cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError>;
-}
+use crate::{ZqCtx, ZqValue, ffi::ZqRawValue};
 
 /// Convert a Rust type into a JS value.
 ///
@@ -17,62 +9,6 @@ pub trait FromZqValue<'cx>: Sized {
 pub trait IntoZqValue<'cx> {
     fn into_zq_value(self, cx: ZqCtx<'cx>) -> ZqValue<'cx>;
 }
-
-// ── FromZqValue impls ──
-
-impl<'cx> FromZqValue<'cx> for ZqValue<'cx> {
-    fn from_zq_value(_cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(val)
-    }
-}
-
-impl<'cx> FromZqValue<'cx> for ZqRawValue {
-    fn from_zq_value(_cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(val.raw())
-    }
-}
-
-impl<'cx> FromZqValue<'cx> for i32 {
-    fn from_zq_value(cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.value_to_float64(val) as i32)
-    }
-}
-
-impl<'cx> FromZqValue<'cx> for i64 {
-    fn from_zq_value(cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.value_to_float64(val) as i64)
-    }
-}
-
-impl<'cx> FromZqValue<'cx> for f64 {
-    fn from_zq_value(cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.value_to_float64(val))
-    }
-}
-
-impl<'cx> FromZqValue<'cx> for bool {
-    fn from_zq_value(cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        Ok(cx.value_to_bool(val))
-    }
-}
-
-impl<'cx> FromZqValue<'cx> for String {
-    fn from_zq_value(cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        val.as_string(cx)
-    }
-}
-
-impl<'cx, T: FromZqValue<'cx>> FromZqValue<'cx> for Option<T> {
-    fn from_zq_value(cx: ZqCtx<'cx>, val: ZqValue<'cx>) -> Result<Self, ZqError> {
-        if val.is_undefined() || val.is_null() {
-            Ok(None)
-        } else {
-            T::from_zq_value(cx, val).map(Some)
-        }
-    }
-}
-
-// ── IntoZqValue impls ──
 
 impl<'cx> IntoZqValue<'cx> for ZqValue<'cx> {
     fn into_zq_value(self, _cx: ZqCtx<'cx>) -> ZqValue<'cx> {
