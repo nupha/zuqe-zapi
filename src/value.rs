@@ -418,6 +418,51 @@ impl<'cx> ZqValue<'cx> {
         ctx.call_constructor(*self, args)
     }
 
+    /// Invoke `self[method](...args)` with `self` as `this`.
+    pub fn invoke(
+        &self,
+        ctx: ZqCtx<'cx>,
+        method: ZqValue<'cx>,
+        args: &[ZqValue<'cx>],
+    ) -> Result<ZqValue<'cx>, ZqError> {
+        let api = ZqApi::singleton();
+        let mut argv: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
+        let v = unsafe {
+            (api.invoke)(ctx.raw, self.raw, method.raw(), argv.as_mut_ptr(), argv.len())
+        };
+        if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
+            Err(ZqError)
+        } else {
+            Ok(ZqValue::from(v))
+        }
+    }
+
+    /// Invoke `self[method](...args)` by UTF-8 name with `self` as `this`.
+    pub fn invoke_str(
+        &self,
+        ctx: ZqCtx<'cx>,
+        method: &str,
+        args: &[ZqValue<'cx>],
+    ) -> Result<ZqValue<'cx>, ZqError> {
+        let api = ZqApi::singleton();
+        let mut argv: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
+        let v = unsafe {
+            (api.invoke_str)(
+                ctx.raw,
+                self.raw,
+                method.as_ptr(),
+                method.len(),
+                argv.as_mut_ptr(),
+                argv.len(),
+            )
+        };
+        if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
+            Err(ZqError)
+        } else {
+            Ok(ZqValue::from(v))
+        }
+    }
+
     /// `Array.prototype.push`.
     pub fn array_push(&self, ctx: ZqCtx, val: ZqValue) -> Result<usize, ZqError> {
         let api = ZqApi::singleton();

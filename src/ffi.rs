@@ -607,6 +607,26 @@ pub struct ZqApi {
     pub call_function: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
     /// Invoke `target` as a constructor (`new target(...args)`).
     pub call_constructor: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
+    /// Invoke `target[method](...argv)` with `target` as `this` (get-property +
+    /// call in one step). Returns exception sentinel on error (including a
+    /// missing or non-callable method).
+    pub invoke: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        method: ZqRawValue,
+        argv: *mut ZqRawValue,
+        argc: usize,
+    ) -> ZqRawValue,
+    /// Invoke `target[method](...argv)` by UTF-8 method name (interned-atom fast
+    /// path, no intermediate JS string). Returns exception sentinel on error.
+    pub invoke_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        method: *const u8,
+        method_len: usize,
+        argv: *mut ZqRawValue,
+        argc: usize,
+    ) -> ZqRawValue,
 
     // ── native object / class ──
     /// Register a class definition with the host. Returns the class ID (>= 0)
