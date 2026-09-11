@@ -423,12 +423,18 @@ impl<'cx> ZqValue<'cx> {
         &self,
         ctx: ZqCtx<'cx>,
         method: ZqValue<'cx>,
-        args: &[ZqValue<'cx>],
+        args: &[ZqValue],
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let mut argv: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
         let v = unsafe {
-            (api.invoke)(ctx.raw, self.raw, method.raw(), argv.as_mut_ptr(), argv.len())
+            (api.invoke)(
+                ctx.raw,
+                self.raw,
+                method.raw(),
+                argv.len(),
+                argv.as_mut_ptr(),
+            )
         };
         if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
@@ -442,7 +448,7 @@ impl<'cx> ZqValue<'cx> {
         &self,
         ctx: ZqCtx<'cx>,
         method: &str,
-        args: &[ZqValue<'cx>],
+        args: &[ZqValue],
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let mut argv: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
@@ -452,8 +458,8 @@ impl<'cx> ZqValue<'cx> {
                 self.raw,
                 method.as_ptr(),
                 method.len(),
-                argv.as_mut_ptr(),
                 argv.len(),
+                argv.as_mut_ptr(),
             )
         };
         if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -487,7 +493,7 @@ impl<'cx> ZqCallInfo<'cx> {
     }
 
     pub fn len(&self) -> usize {
-        unsafe { (*self.raw).argc as usize }
+        unsafe { (*self.raw).argc }
     }
 
     /// The registration magic (see `#[zq_function(magic = N)]` /

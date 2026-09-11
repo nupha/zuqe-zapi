@@ -72,10 +72,10 @@ pub struct ZqCallInfoS {
     pub target: ZqRawValue,
     /// The `this` value.
     pub this: ZqRawValue,
+    /// Argument count.
+    pub argc: usize,
     /// Argument array (raw handles).
     pub args: *const ZqRawValue,
-    /// Argument count.
-    pub argc: u32,
     /// Magic value set at registration (`cc.magic()`), used for dispatching one
     /// body across multiple methods.
     pub magic: i32,
@@ -443,13 +443,15 @@ pub struct ZqClassDef {
     // ── v6: unified field entries (mirror `FieldDef`) ──
     /// Constructor arity (`ClassCtorDef.length`).
     pub call_arity: u8,
+    /// Instance member count (prototype).
+    pub proto_entries_len: usize,
     /// Instance members on the prototype (methods/accessors/constants,
     /// `ee.method` / `ee.prop`).
     pub proto_entries: *const ZqFieldDef,
-    pub proto_entries_len: usize,
+    /// Static member count (constructor).
+    pub static_entries_len: usize,
     /// Static members on the constructor (`Cls.method` / `Cls.prop`).
     pub static_entries: *const ZqFieldDef,
-    pub static_entries_len: usize,
 }
 
 // Descriptor structs are immutable after registration; the contained pointers
@@ -472,9 +474,10 @@ pub struct ZqModuleInfo {
     /// Use `ZQ_VERSION_PACKED` to build, `abi_version()` / `api_version()` to read.
     pub version: u32,
 
+    /// Export count.
+    pub exports_len: usize,
     /// Export field array (`ZqFieldDef`, valid for the process lifetime).
     pub exports: *const ZqFieldDef,
-    pub exports_len: usize,
 
     /// Module load initialization hook (called at evaluation time with env;
     /// non-0 = failure).
@@ -614,8 +617,8 @@ pub struct ZqApi {
         env: ZqRawCtx,
         target: ZqRawValue,
         method: ZqRawValue,
-        argv: *mut ZqRawValue,
         argc: usize,
+        argv: *mut ZqRawValue,
     ) -> ZqRawValue,
     /// Invoke `target[method](...argv)` by UTF-8 method name (interned-atom fast
     /// path, no intermediate JS string). Returns exception sentinel on error.
@@ -624,8 +627,8 @@ pub struct ZqApi {
         target: ZqRawValue,
         method: *const u8,
         method_len: usize,
-        argv: *mut ZqRawValue,
         argc: usize,
+        argv: *mut ZqRawValue,
     ) -> ZqRawValue,
 
     // ── native object / class ──
@@ -723,7 +726,7 @@ pub struct ZqApi {
     pub new_object: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
     /// Construct a JS array from the given elements.
     pub new_array:
-        unsafe extern "C" fn(env: ZqRawCtx, elements: *const ZqRawValue, len: usize) -> ZqRawValue,
+        unsafe extern "C" fn(env: ZqRawCtx, len: usize, elements: *const ZqRawValue) -> ZqRawValue,
 
     // ── value query / conversion ──
     /// The type of a JS value, see `ZQ_VALUE_TYPE_*` constants.

@@ -136,7 +136,7 @@ impl<'cx> ZqCtx<'cx> {
 
     pub fn new_array(&self, elements: &[ZqRawValue]) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
-        let arr = unsafe { (api.new_array)(self.raw, elements.as_ptr(), elements.len()) };
+        let arr = unsafe { (api.new_array)(self.raw, elements.len(), elements.as_ptr()) };
         if arr == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -196,7 +196,7 @@ impl<'cx> ZqCtx<'cx> {
             target: target.raw(),
             this: this.raw(),
             args: raw_args.as_ptr(),
-            argc: raw_args.len() as u32,
+            argc: raw_args.len(),
             magic: 0,
         };
         let ret = unsafe { (api.call_function)(self.raw, &mut info) };
@@ -219,7 +219,7 @@ impl<'cx> ZqCtx<'cx> {
             target: target.raw(),
             this: 0,
             args: raw_args.as_ptr(),
-            argc: raw_args.len() as u32,
+            argc: raw_args.len(),
             magic: 0,
         };
         let ret = unsafe { (api.call_constructor)(self.raw, &mut info) };
