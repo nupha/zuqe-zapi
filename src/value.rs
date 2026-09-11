@@ -194,30 +194,43 @@ impl<'cx> ZqValue<'cx> {
         self.raw == ZqApi::singleton().const_values[ZQ_CONST_VALUE_SLOT_NAN]
     }
 
-    /// Convert to number (f64)
-    pub fn to_f64(self, ctx: ZqCtx<'cx>) -> Result<f64, ZqError> {
+    /// Coerce to number value
+    pub fn to_number(self, ctx: ZqCtx) -> Result<f64, ZqError> {
         let api = ZqApi::singleton();
         let mut ret = 0.0_f64;
         let r = unsafe { (api.value_to_float64)(ctx.raw, self.raw, &mut ret) };
         if r == 0 { Ok(ret) } else { Err(ZqError) }
     }
 
-    /// Convert to number (i64)
-    pub fn to_i64(self, ctx: ZqCtx<'cx>) -> Result<i64, ZqError> {
+    /// Coerce to number (f64)
+    pub fn to_f64(self, ctx: ZqCtx) -> Result<f64, ZqError> {
+        let api = ZqApi::singleton();
+        let mut ret = 0.0_f64;
+        let r = unsafe { (api.value_to_float64)(ctx.raw, self.raw, &mut ret) };
+        if r == 0 { Ok(ret) } else { Err(ZqError) }
+    }
+
+    /// Coerce to number (i64)
+    pub fn to_i64(self, ctx: ZqCtx) -> Result<i64, ZqError> {
         let api = ZqApi::singleton();
         let mut ret = 0_i64;
         let r = unsafe { (api.value_to_int64)(ctx.raw, self.raw, &mut ret) };
         if r == 0 { Ok(ret) } else { Err(ZqError) }
     }
 
-    /// Convert to bool
+    /// Coerce to number (i32), narrowing from the i64 conversion.
+    pub fn to_i32(self, ctx: ZqCtx) -> Result<i32, ZqError> {
+        self.to_i64(ctx).map(|n| n as i32)
+    }
+
+    /// Coerce to bool
     pub fn to_bool(self, ctx: ZqCtx<'cx>) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let r = unsafe { (api.value_to_bool)(ctx.raw, self.raw) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
-    /// Convert to string
+    /// Coerce to string
     pub fn to_string(self, ctx: ZqCtx) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let sval = unsafe { (api.value_to_string)(ctx.raw, self.raw) };
