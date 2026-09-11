@@ -519,10 +519,11 @@ impl<'cx> ZqCallInfo<'cx> {
         unsafe { ZqValue::from((*self.raw).this) }
     }
 
-    pub fn arg(&self, i: usize) -> ZqValue<'cx> {
-        if i >= self.len() {
-            return ZqValue::from(0);
+    pub fn arg(&self, nth: usize) -> ZqValue<'cx> {
+        if nth >= self.len() {
+            ZqValue::undefined()
+        } else {
+            ZqValue::from(unsafe { *(*self.raw).argv.add(nth) })
         }
-        ZqValue::from(unsafe { *(*self.raw).args.add(i) })
     }
 }

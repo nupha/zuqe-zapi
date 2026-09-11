@@ -75,7 +75,7 @@ pub struct ZqCallInfoS {
     /// Argument count.
     pub argc: usize,
     /// Argument array (raw handles).
-    pub args: *const ZqRawValue,
+    pub argv: *const ZqRawValue,
     /// Magic value set at registration (`cc.magic()`), used for dispatching one
     /// body across multiple methods.
     pub magic: i32,
@@ -733,12 +733,12 @@ pub struct ZqApi {
     pub value_get_type: unsafe extern "C" fn(val: ZqRawValue) -> i32,
     /// Coerce a JS value to a boolean (ToBoolean; 1=true, 0=false, -1=error).
     pub value_to_bool: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> i32,
-    /// Coerce a JS value to an i64 number. return 0=ok, -1=error
+    /// Coerce a JS value to number (i64). return 0=ok, -1=error
     pub value_to_int64: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue, ret: *mut i64) -> i32,
-    /// Coerce a JS value to an f64 number. return 0=ok, -1=error
+    /// Coerce a JS value to number (f64). return 0=ok, -1=error
     pub value_to_float64:
         unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue, ret: *mut f64) -> i32,
-    /// Coerce a JS value to a JS string (ToString; a string handle).
+    /// Coerce a JS value to JS string
     pub value_to_string: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> ZqRawValue,
 
     /// Copy UTF-8 bytes of string `s` into `buf`, starting at `offset` bytes.

@@ -195,7 +195,7 @@ impl<'cx> ZqCtx<'cx> {
         let mut info = ZqCallInfoS {
             target: target.raw(),
             this: this.raw(),
-            args: raw_args.as_ptr(),
+            argv: raw_args.as_ptr(),
             argc: raw_args.len(),
             magic: 0,
         };
@@ -218,7 +218,7 @@ impl<'cx> ZqCtx<'cx> {
         let mut info = ZqCallInfoS {
             target: target.raw(),
             this: 0,
-            args: raw_args.as_ptr(),
+            argv: raw_args.as_ptr(),
             argc: raw_args.len(),
             magic: 0,
         };
