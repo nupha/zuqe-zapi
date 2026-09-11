@@ -40,9 +40,6 @@ pub const ZQ_FIELD_UNDEFINED: u8 = 8;
 pub const ZQ_PROP_CONFIGURABLE: u32 = 1;
 pub const ZQ_PROP_WRITABLE: u32 = 1 << 1;
 pub const ZQ_PROP_ENUMERABLE: u32 = 1 << 2;
-/// C_W_E = configurable | writable | enumerable (fast conversion of a plain
-/// data-property descriptor); used by `ZqFieldDef.prop_flags`.
-pub const ZQ_PROP_C_W_E: u32 = ZQ_PROP_CONFIGURABLE | ZQ_PROP_WRITABLE | ZQ_PROP_ENUMERABLE;
 
 pub const ZQ_VALUE_TYPE_UNDEFINED: i32 = 0;
 pub const ZQ_VALUE_TYPE_NULL: i32 = 1;
@@ -592,12 +589,10 @@ pub struct ZqApi {
     pub get_global_str:
         unsafe extern "C" fn(env: ZqRawCtx, name: *const u8, name_len: usize) -> ZqRawValue,
     /// Set a property on the global object by raw value key.
-    /// `flags` is a `ZQ_PROP_C_W_E` bitmask for the property descriptor.
     /// The host throws in strict mode automatically.
     /// Returns 1=set, 0=not set, -1=error.
     pub set_global: unsafe extern "C" fn(env: ZqRawCtx, name: ZqRawValue, val: ZqRawValue) -> i32,
     /// Set a property on the global object by UTF-8 name.
-    /// `flags` is a `ZQ_PROP_C_W_E` bitmask.
     /// The host throws in strict mode automatically.
     /// Returns 1=set, 0=not set, -1=error.
     pub set_global_str: unsafe extern "C" fn(
@@ -637,8 +632,7 @@ pub struct ZqApi {
     /// Get a property by raw value key.
     pub get_property:
         unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
-    /// Set a property by raw value key. `flags` is a `ZQ_PROP_C_W_E` bitmask
-    /// for the property descriptor. The host throws in strict mode
+    /// Set a property by raw value key. The host throws in strict mode
     /// automatically; the caller cannot control this.
     /// Returns 1=set, 0=not set, -1=error.
     pub set_property: unsafe extern "C" fn(
@@ -666,8 +660,7 @@ pub struct ZqApi {
         key: *const u8,
         key_len: usize,
     ) -> ZqRawValue,
-    /// Set a property by UTF-8 key. `flags` is a `ZQ_PROP_C_W_E` bitmask.
-    /// The host throws in strict mode automatically.
+    /// Set a property by UTF-8 key. The host throws in strict mode automatically.
     /// Returns 1=set, 0=not set, -1=error.
     pub set_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
