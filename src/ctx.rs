@@ -5,7 +5,10 @@ use std::{marker::PhantomData, os::raw::c_void};
 
 use crate::{
     ZqError, ZqRawCtx, ZqValue,
-    ffi::{ZqApi, ZqCallInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue, ZqWakeHandleS},
+    ffi::{
+        ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqJobRunFn, ZqRawValue,
+        ZqWakeHandleS,
+    },
 };
 
 /// Clonable, thread-safe handle to wake the JS event loop from any thread.
@@ -80,9 +83,9 @@ impl<'cx> ZqCtx<'cx> {
     pub fn wake_handle(&self) -> ZqWakeHandle {
         let api = ZqApi::singleton();
         ZqWakeHandle {
-            raw: unsafe { (api.wake_handle_new)(self.raw) },
-            wake_fn: api.wake_handle_wake,
-            free_fn: api.wake_handle_free,
+            raw: unsafe { (api.new_waker)(self.raw) },
+            wake_fn: api.waker_wake,
+            free_fn: api.waker_free,
         }
     }
 
@@ -113,8 +116,8 @@ impl<'cx> ZqCtx<'cx> {
 
     pub fn new_string(&self, s: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
-        let s = unsafe { (api.new_string_utf8)(self.raw, s.as_ptr(), s.len()) };
-        if s == api.value_exception {
+        let s = unsafe { (api.new_string)(self.raw, s.as_ptr(), s.len()) };
+        if s == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(s))
@@ -124,7 +127,7 @@ impl<'cx> ZqCtx<'cx> {
     pub fn new_object(&self) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let v = unsafe { (api.new_object)(self.raw) };
-        if v == api.value_exception {
+        if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
@@ -134,7 +137,7 @@ impl<'cx> ZqCtx<'cx> {
     pub fn new_array(&self, elements: &[ZqRawValue]) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let arr = unsafe { (api.new_array)(self.raw, elements.as_ptr(), elements.len()) };
-        if arr == api.value_exception {
+        if arr == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(arr))
@@ -146,7 +149,7 @@ impl<'cx> ZqCtx<'cx> {
         let api = ZqApi::singleton();
         let d = self.new_string(desc)?;
         let v = unsafe { (api.new_symbol)(self.raw, d.raw()) };
-        if v == api.value_exception {
+        if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
@@ -169,12 +172,12 @@ impl<'cx> ZqCtx<'cx> {
     pub fn read_string(&self, val: ZqRawValue) -> String {
         let api = ZqApi::singleton();
         // Measure-then-copy: a null buf returns the byte count; -1 = not a string.
-        let len = unsafe { (api.get_string_utf8)(self.raw, val, std::ptr::null_mut(), 0, 0) };
+        let len = unsafe { (api.string_get_utf8)(self.raw, val, std::ptr::null_mut(), 0, 0) };
         if len <= 0 {
             return String::new();
         }
         let mut buf = vec![0u8; len as usize];
-        unsafe { (api.get_string_utf8)(self.raw, val, buf.as_mut_ptr(), len as usize, 0) };
+        unsafe { (api.string_get_utf8)(self.raw, val, buf.as_mut_ptr(), len as usize, 0) };
         String::from_utf8_lossy(&buf).into_owned()
     }
 
@@ -182,7 +185,7 @@ impl<'cx> ZqCtx<'cx> {
     pub fn get_global(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let v = unsafe { (api.get_global_str)(self.raw, name.as_ptr(), name.len()) };
-        if v == api.value_exception {
+        if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
@@ -205,7 +208,7 @@ impl<'cx> ZqCtx<'cx> {
             magic: 0,
         };
         let ret = unsafe { (api.call_constructor)(self.raw, &mut info) };
-        if ret == api.value_exception {
+        if ret == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(ret))
@@ -225,13 +228,13 @@ impl<'cx> ZqCtx<'cx> {
     /// access that state. The callback must not panic or perform any operation
     /// that could invalidate the JS heap while tracing is active.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn set_gc_trace_func(
+    pub fn gc_set_trace_func(
         &self,
         func: Option<crate::ffi::ZqGcTraceFn>,
         opaque: *mut std::ffi::c_void,
     ) -> Result<(), ZqError> {
         let api = ZqApi::singleton();
-        let r = unsafe { (api.set_gc_trace_func)(self.raw, func, opaque) };
+        let r = unsafe { (api.gc_set_trace_func)(self.raw, func, opaque) };
         if r < 0 { Err(ZqError) } else { Ok(()) }
     }
 
@@ -251,7 +254,7 @@ impl<'cx> ZqCtx<'cx> {
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let r = unsafe { (api.new_instance)(self.raw, def, opaque) };
-        if r == 0 || r == api.value_exception {
+        if r == 0 || r == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(r))
@@ -283,7 +286,7 @@ impl<'cx> ZqCtx<'cx> {
             magic: 0,
         };
         let ret = unsafe { (api.call_function)(self.raw, &mut info) };
-        if ret == api.value_exception {
+        if ret == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(ret))

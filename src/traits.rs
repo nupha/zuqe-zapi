@@ -88,7 +88,7 @@ impl<'cx> IntoZqValue<'cx> for ZqRawValue {
 
 impl<'cx> IntoZqValue<'cx> for i32 {
     fn into_zq_value(self, _: ZqCtx<'cx>) -> ZqValue<'cx> {
-        ZqValue::number(self as f64)
+        ZqValue::int32(self)
     }
 }
 

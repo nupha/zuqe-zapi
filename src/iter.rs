@@ -1,6 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 use std::ffi::c_void;
 
-use crate::{ZqCtx, ZqError, ZqRawCtx, ZqRawValue, ZqValue, ffi::ZqApi};
+use crate::{
+    ZqCtx, ZqError, ZqRawCtx, ZqRawValue, ZqValue,
+    ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi},
+};
 
 /// Result of fetching the next value from an async iterator.
 pub enum AsyncIterResult<'a> {
@@ -31,7 +37,7 @@ impl<'cx> ZqCtx<'cx> {
                 opaque,
             )
         };
-        if raw == api.value_exception {
+        if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(raw))

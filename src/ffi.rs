@@ -85,7 +85,7 @@ pub struct ZqCallInfoS {
 ///
 /// **The return value IS the JS value**: on success, return the result handle;
 /// on error, return the `value_exception` sentinel (same convention as quickjs's
-/// `JS_EXCEPTION`). See `ZqApi::wake_handle_new` / `wake_handle_wake` / `wake_handle_free`.
+/// `JS_EXCEPTION`). See `ZqApi::new_waker` / `waker_wake` / `waker_free`.
 #[repr(C)]
 pub struct ZqWakeHandleS([u8; 0]);
 
@@ -124,7 +124,7 @@ pub type ZqFieldValueFn = unsafe extern "C" fn(env: ZqRawCtx, out: *mut ZqRawVal
 /// Global (thread-local) GC trace callback: called by the host on every GC
 /// cycle to inform the GC about JS values held in native storage (thread_local,
 /// etc.) via `ZqGcTraceCtx::mark`. Same signature as the class payload
-/// `ZqClassDef.gc_trace`, registered via `set_gc_trace_func`.
+/// `ZqClassDef.gc_trace`, registered via `gc_set_trace_func`.
 pub type ZqGcTraceFn = unsafe extern "C" fn(gcx: *mut ZqGcTraceCtxS, target: *mut c_void);
 
 // ── job queue (cross-thread async bridge) ──
@@ -135,7 +135,7 @@ pub type ZqJobRunFn = unsafe extern "C" fn(data: *mut c_void, env: ZqRawCtx) -> 
 /// Optional GC trace for JS values held inside `data`.
 pub type ZqJobTraceFn = unsafe extern "C" fn(data: *mut c_void, gcx: *mut ZqGcTraceCtxS);
 
-// ── async iterator fetch callback (new in API v2) ──
+// ── async iterator fetch callback ──
 /// FFI callback for `new_async_iterator`. Called on the JS thread to produce
 /// the next value. Returns status code:
 ///   - 0 = Value ready (written to `*ret_val`)
@@ -144,6 +144,30 @@ pub type ZqJobTraceFn = unsafe extern "C" fn(data: *mut c_void, gcx: *mut ZqGcTr
 ///   - -1 = Error (reject the promise)
 pub type ZqAsyncIterFetchFn =
     unsafe extern "C" fn(env: ZqRawCtx, opaque: *mut c_void, ret_val: *mut ZqRawValue) -> i32;
+
+// ── constant value slot indices ──
+
+/// Total number of constant value slots (reserved for future expansion).
+pub const ZQ_CONST_VALUE_SLOT_COUNT: usize = 32;
+
+/// Index into `ZqApi::const_values` for the `undefined` value handle.
+pub const ZQ_CONST_VALUE_SLOT_UNDEFINED: usize = 0;
+/// Index into `ZqApi::const_values` for the `null` value handle.
+pub const ZQ_CONST_VALUE_SLOT_NULL: usize = 1;
+/// Index into `ZqApi::const_values` for the boolean `true` value handle.
+pub const ZQ_CONST_VALUE_SLOT_TRUE: usize = 2;
+/// Index into `ZqApi::const_values` for the boolean `false` value handle.
+pub const ZQ_CONST_VALUE_SLOT_FALSE: usize = 3;
+/// Index into `ZqApi::const_values` for the integer `0` value handle (`+0`).
+pub const ZQ_CONST_VALUE_SLOT_ZERO: usize = 4;
+/// Index into `ZqApi::const_values` for the `NaN` number value handle.
+pub const ZQ_CONST_VALUE_SLOT_NAN: usize = 5;
+/// Index into `ZqApi::const_values` for the `+Infinity` number value handle.
+pub const ZQ_CONST_VALUE_SLOT_INFINITY: usize = 6;
+/// Index into `ZqApi::const_values` for the `-Infinity` number value handle.
+pub const ZQ_CONST_VALUE_SLOT_MINUS_INFINITY: usize = 7;
+/// Index into `ZqApi::const_values` for the exception sentinel (`JS_EXCEPTION` style).
+pub const ZQ_CONST_VALUE_SLOT_EXCEPTION: usize = 8;
 
 // ──────────────────────────────────────
 // Field definitions (ABI version)
@@ -508,48 +532,115 @@ impl ZqModuleInfo {
 #[repr(C)]
 pub struct ZqApi {
     // ── host-provided constant value handles ──
-    // Fixed JS values the host precomputes once. They are plain constants, so
-    // extensions read them directly from the table instead of calling an FFI
+    // Fixed JS values the host precomputes once. Indexed by `ZQ_CONST_VALUE_SLOT_*`.
+    // Extensions read them directly from the table instead of calling an FFI
     // function (`undefined`/`null`/`true`/`false` have no `*_raw` fn at all).
     // The engine-internal sentinels (`exception`, `uninitialized`) are *not*
     // exposed: returning them to JS would corrupt the trampoline.
-    /// The `undefined` value handle.
-    pub value_undefined: ZqRawValue,
-    /// The `null` value handle.
-    pub value_null: ZqRawValue,
-    /// The boolean `true` value handle.
-    pub value_true: ZqRawValue,
-    /// The boolean `false` value handle.
-    pub value_false: ZqRawValue,
-    /// The `NaN` number value handle.
-    pub value_nan: ZqRawValue,
-    /// The integer `0` number value handle (`+0`; the `-0` float is distinct).
-    pub value_zero: ZqRawValue,
-    /// The integer `1` number value handle.
-    pub value_one: ZqRawValue,
-    /// The integer `-1` number value handle.
-    pub value_negative_one: ZqRawValue,
-    /// The `+Infinity` number value handle.
-    pub value_infinity: ZqRawValue,
-    /// The `-Infinity` number value handle.
-    pub value_minus_infinity: ZqRawValue,
-    /// The **exception sentinel** (`JS_EXCEPTION` style): a `body` returns this
-    /// handle to signal an error instead of a result value. It is not a value
-    /// the extension should hand to JS.
-    pub value_exception: ZqRawValue,
+    pub const_values: [ZqRawValue; ZQ_CONST_VALUE_SLOT_COUNT],
 
+    // ── exception ──
+    /// Throw a JS error of the given type. `err_type` is one of the
+    /// `ZQ_ERR_TYPE_*` integer constants; `err_message` / `err_message_len`
+    /// is the UTF-8 error message.
+    pub throw: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        err_type: i32,
+        err_message: *const u8,
+        err_message_len: i32,
+    ),
+    /// Take the current exception and return its raw error value
+    /// (undefined if none). After this call the pending exception is cleared.
+    pub take_exception: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
+    /// Peek the current exception without consuming it (undefined if none).
+    pub exception: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
+
+    // ── job queue (cross-thread async bridge) ──
+    /// Queue a polling job on this context's event loop. `run(data)` executes
+    /// once per tick until it returns Done or an error. Returns 0 on success,
+    /// <0 on error.
+    pub add_polling_job: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        run_fn: ZqJobRunFn,
+        trace_fn: Option<ZqJobTraceFn>,
+        data: *mut c_void,
+    ) -> i32,
+
+    // ── event-loop wake (cross-thread) ──
+    /// Create an opaque waker on the JS thread.
+    pub new_waker: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqWakeHandleS,
+    /// Wake the parked JS event loop. Safe from any thread.
+    pub waker_wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
+    /// Release a waker.
+    pub waker_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
+
+    // ── GC ──
+    /// Mark `val` as reachable during GC tracing. Returns 0 on success, <0 on
+    /// error.
+    pub gc_mark: unsafe extern "C" fn(gcx: *mut ZqGcTraceCtxS, val: ZqRawValue) -> i32,
+    /// Register a global (thread_local) GC trace callback. 0 on success, <0 on error.
+    pub gc_set_trace_func:
+        unsafe extern "C" fn(env: ZqRawCtx, cb: Option<ZqGcTraceFn>, opaque: *mut c_void) -> i32,
+
+    // ── global object ──
+    /// Get a property from the global object by raw value key.
+    pub get_global: unsafe extern "C" fn(env: ZqRawCtx, name: ZqRawValue) -> ZqRawValue,
+    /// Get a property from the global object by UTF-8 name.
+    pub get_global_str:
+        unsafe extern "C" fn(env: ZqRawCtx, name: *const u8, name_len: usize) -> ZqRawValue,
+
+    // ── function call ──
+    /// Call a JS function with `this` and arguments.
+    pub call_function: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
+    /// Invoke `target` as a constructor (`new target(...args)`).
+    pub call_constructor: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
+
+    // ── native object / class ──
+    /// Register a class definition with the host. Returns the class ID (>= 0)
+    /// on success, < 0 on error.
+    pub register_class: unsafe extern "C" fn(env: ZqRawCtx, class_def: *const ZqClassDef) -> i32,
+    /// Create a new instance of a registered class with the given payload.
+    pub new_instance: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        class_def: *const ZqClassDef,
+        payload: *mut c_void,
+    ) -> ZqRawValue,
+    /// Get the native payload pointer from a native object.
+    pub get_native_ptr: unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue) -> *mut c_void,
+    /// Create a callable JS function backed by a Rust callback.
+    pub new_native_function: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        run_fn: ZqBodyFn,
+        name: ZqRawValue,
+        magic: i32,
+    ) -> ZqRawValue,
+
+    // ── value constructors ──
+    /// Construct a JS number from f64.
     pub new_number: unsafe extern "C" fn(n: f64) -> ZqRawValue,
-
+    /// Construct a JS number from i32.
+    pub new_int32: unsafe extern "C" fn(n: i32) -> ZqRawValue,
     /// Construct a JS string from **UTF-8 encoded bytes** (`ptr`/`len` must be
     /// valid UTF-8; the host does not validate — invalid sequences are handled
-    /// per engine policy). Paired with `get_string_utf8`: reads and writes UTF-8.
-    /// Returns `value_exception` on failure.
-    pub new_string_utf8:
-        unsafe extern "C" fn(env: ZqRawCtx, ptr: *const u8, len: usize) -> ZqRawValue,
+    /// per engine policy). Returns exception sentinel on failure.
+    pub new_string: unsafe extern "C" fn(env: ZqRawCtx, ptr: *const u8, len: usize) -> ZqRawValue,
+    /// Construct a JS Symbol with the given description value.
     pub new_symbol: unsafe extern "C" fn(env: ZqRawCtx, desc: ZqRawValue) -> ZqRawValue,
+    /// Construct a new empty JS object.
     pub new_object: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
+    /// Construct a JS array from the given elements.
     pub new_array:
         unsafe extern "C" fn(env: ZqRawCtx, elements: *const ZqRawValue, len: usize) -> ZqRawValue,
+
+    // ── value query / conversion ──
+    /// The type of a JS value, see `ZQ_VALUE_TYPE_*` constants.
+    pub value_get_type: unsafe extern "C" fn(val: ZqRawValue) -> i32,
+    /// Coerce a JS value to an f64 number (ToNumber; NaN for non-numeric).
+    pub value_to_float64: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> f64,
+    /// Coerce a JS value to a boolean (ToBoolean; 1 if truthy, 0 otherwise).
+    pub value_to_bool: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> i32,
+    /// Coerce a JS value to a JS string (ToString; a string handle).
+    pub value_to_string: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> ZqRawValue,
 
     /// Copy UTF-8 bytes of string `s` into `buf`, starting at `offset` bytes.
     ///
@@ -559,20 +650,21 @@ pub struct ZqApi {
     /// * `buf != null`: copies `min(buf_len, remaining bytes)` bytes, returns the
     ///   actual number copied;
     /// * returns `-1` if `s` is not a string.
-    pub get_string_utf8: unsafe extern "C" fn(
+    pub string_get_utf8: unsafe extern "C" fn(
         env: ZqRawCtx,
         s: ZqRawValue,
         buf: *mut u8,
         buf_len: usize,
         offset: usize,
     ) -> i32,
+    /// Read the description of a JS Symbol value.
+    pub symbol_get_description: unsafe extern "C" fn(env: ZqRawCtx, sym: ZqRawValue) -> ZqRawValue,
 
-    pub get_symbol_description: unsafe extern "C" fn(env: ZqRawCtx, sym: ZqRawValue) -> ZqRawValue,
-
+    // ── property access (ZqRawValue key) ──
+    /// Get a property by raw value key.
     pub get_property:
         unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
-
-    /// returns 1=set, 0=not set, -1=error
+    /// Set a property by raw value key. Returns 1=set, 0=not set, -1=error.
     pub set_property: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
@@ -581,164 +673,27 @@ pub struct ZqApi {
         throw: i32,
         flags: u32,
     ) -> i32,
-
-    /// Check whether a property exists on `target`.
-    /// Returns 1 if present, 0 if not present, -1 if error.
+    /// Check whether a property exists. Returns 1 if present, 0 if not, -1 if error.
     pub has_property:
         unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
-
-    /// Delete a property from `obj`. Returns 1 on success, 0 if the property
-    /// does not exist or cannot be deleted, -1 if error.
-    /// `throw` controls whether a JS exception is thrown on failure (1 = throw, 0 = silent).
+    /// Delete a property. `throw` controls whether a JS exception is thrown on
+    /// failure (1 = throw, 0 = silent). Returns 1=deleted, 0=not deleted, -1=error.
     pub delete_property:
         unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue, throw: i32) -> i32,
 
-    /// Get target's length property. return: minus for error, otherwise the length
-    pub get_length_prop: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue) -> i64,
-
-    /// push an element to Array.
-    /// returns minus for error, otherwise for new length
-    pub array_push: unsafe extern "C" fn(env: ZqRawCtx, arr: ZqRawValue, val: ZqRawValue) -> i64,
-
-    pub get_global: unsafe extern "C" fn(env: ZqRawCtx, name: ZqRawValue) -> ZqRawValue,
-
-    pub call_function: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
-
-    /// Mark `val` as reachable during GC tracing. Returns 0 on success, <0 on
-    /// error. Called from `ZqGcTraceCtx::mark` to inform the GC about JS values
-    /// held in native storage.
-    pub gc_mark: unsafe extern "C" fn(gcx: *mut ZqGcTraceCtxS, val: ZqRawValue) -> i32,
-
-    // ── native object / class ──
-    /// Register a class definition with the host. Returns the class ID (>= 0)
-    /// on success, < 0 on error. After registration, `new_instance` can create
-    /// objects of this class.
-    pub register_class: unsafe extern "C" fn(env: ZqRawCtx, class_def: *const ZqClassDef) -> i32,
-    pub new_instance: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        class_def: *const ZqClassDef,
-        payload: *mut c_void,
-    ) -> ZqRawValue,
-    pub get_native_ptr: unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue) -> *mut c_void,
-
-    /// The type of a JS value, see ZQ_VALUE_TYPE_XXX const.
-    pub get_value_type: unsafe extern "C" fn(val: ZqRawValue) -> i32,
-
-    /// Coerce a JS value to an f64 number (ToNumber; NaN for non-numeric).
-    pub value_to_float64: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> f64,
-    /// Coerce a JS value to a boolean (ToBoolean; 1 if truthy, 0 otherwise).
-    pub value_to_bool: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> i32,
-    /// Coerce a JS value to a JS string (ToString; a string handle).
-    pub value_to_string: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> ZqRawValue,
-
-    /// Invoke `target` as a constructor (`new target(...args)`).
-    pub call_constructor: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
-
-    // ── GC safety ──
-    /// Register a global (thread_local) GC trace callback. Called by the
-    /// extension (typically in its module `init`) so the host can keep JS values
-    /// held in native storage alive across collections. 0 on success, <0 on error.
-    pub set_gc_trace_func:
-        unsafe extern "C" fn(env: ZqRawCtx, cb: Option<ZqGcTraceFn>, opaque: *mut c_void) -> i32,
-
-    // ── job queue (cross-thread async bridge) ──
-    /// Queue a polling job on this context's event loop (the fetch/fs async
-    /// pattern): `run(data)` executes once per tick until it returns Done or
-    /// an error. Use it to pump results from an OS worker thread into JS by
-    /// calling back with `call_function`. Returns 0 on success, <0 on error.
-    pub add_polling_job: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        run_fn: ZqJobRunFn,
-        trace_fn: Option<ZqJobTraceFn>,
-        data: *mut c_void,
-    ) -> i32,
-
-    /// Create a callable JS function backed by a Rust callback. `run_fn` is
-    /// invoked each time the function is called.
-    pub new_native_function: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        run_fn: ZqBodyFn,
-        name: ZqRawValue,
-        magic: i32,
-    ) -> ZqRawValue,
-
-    /// Create an async iterable iterator. `fetch_fn` is called on the JS
-    /// thread to produce each value. Returns `value_undefined` when done,
-    /// `value_exception` on error. The iterator implements the async iterator
-    /// protocol (`for await...of`). `opaque` is the Rust payload passed to
-    /// `fetch_fn` on each call; managed via `trace_fn`/`drop_fn`.
-    pub new_async_iterator: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        fetch_fn: ZqAsyncIterFetchFn,
-        trace_fn: Option<ZqGcTraceFn>,
-        drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
-        opaque: *mut c_void,
-    ) -> ZqRawValue,
-
-    // ── promise primitives (JS thread only) ──
-    /// Create a pending Promise. GC-rooted until settled, so the raw handle
-    /// may be held (e.g. inside a polling job's data) across ticks.
-    pub new_promise: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
-    /// Settle fulfilled. Double-settle is a silent no-op.
-    pub promise_resolve:
-        unsafe extern "C" fn(env: ZqRawCtx, promise: ZqRawValue, value: ZqRawValue),
-    /// Settle rejected. Double-settle is a silent no-op.
-    pub promise_reject:
-        unsafe extern "C" fn(env: ZqRawCtx, promise: ZqRawValue, reason: ZqRawValue),
-
-    /// Throw a JS error of the given type. `err_type` is one of the
-    /// `ZQ_ERR_TYPE_*` constants; `err_message` / `err_len` is the UTF-8
-    /// error message. The host creates the appropriate Error object, stores
-    /// it as the pending exception, and returns `value_exception`.
-    /// Throw a JS error of the given type. `err_type` is one of the
-    /// `ZQ_ERR_TYPE_*` integer constants (see [`crate::ZqErrorType`]);
-    /// `err_message` / `err_len` is the UTF-8 error message. The host creates
-    /// the appropriate Error object, stores it as the pending exception, and
-    /// returns `value_exception`.
-    pub throw: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        err_type: i32,
-        err_message: *const u8,
-        err_message_len: i32,
-    ),
-
-    // ── exception hygiene ──
-    /// Take the current exception and return raw error value
-    /// (`value_undefined` if none). After this call `cur_exception` is empty;
-    /// the returned handle is GC-rooted until the current scope ends.
-    pub take_exception: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
-
-    /// Peek the current exception without consuming it
-    /// (`value_undefined` if none).
-    pub exception: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
-
-    // ── event-loop wake (cross-thread) ──
-    /// Opaque wake handle. Created on the JS thread via `wake_handle_new`;
-    /// `wake_handle_wake` is safe from any thread (worker threads included);
-    /// release with `wake_handle_free`.
-    /// Wake handle: the extension's worker thread calls `wake_handle_wake` after
-    /// pushing results into shared state, so the parked JS event loop wakes up
-    /// immediately to process them. Without this call, a pure event-driven mode
-    /// would hang indefinitely (when no fallback polling is active).
-    pub wake_handle_new: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqWakeHandleS,
-    pub wake_handle_wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
-    pub wake_handle_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
-
-    // ── str-keyed property access ──
-    // Same semantics as the `ZqRawValue`-keyed counterparts above, but the key
-    // is passed as UTF-8 `(ptr, len)`. The host resolves it to an interned atom
+    // ── property access (UTF-8 key, fast-path) ──
+    // Same semantics as the `ZqRawValue`-keyed counterparts, but the key is
+    // passed as UTF-8 `(ptr, len)`. The host resolves it to an interned atom
     // **without allocating an intermediate JS string**, so repeated access with
-    // a literal key is allocation-free. This is the key-access fast path.
-    /// `get_property` with a UTF-8 key. Returns `value_exception` on error.
+    // a literal key is allocation-free.
+    /// Get a property by UTF-8 key. Returns exception sentinel on error.
     pub get_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
         key: *const u8,
         key_len: usize,
     ) -> ZqRawValue,
-
-    /// `set_property` with a UTF-8 key. `val` is a raw handle.
-    /// returns 1=set, 0=not set, -1=error
+    /// Set a property by UTF-8 key. Returns 1=set, 0=not set, -1=error.
     pub set_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
@@ -748,16 +703,14 @@ pub struct ZqApi {
         throw: i32,
         flags: u32,
     ) -> i32,
-
-    /// `has_property` with a UTF-8 key. 1=present, 0=absent, -1=error.
+    /// Check whether a property exists by UTF-8 key. 1=present, 0=absent, -1=error.
     pub has_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
         key: *const u8,
         key_len: usize,
     ) -> i32,
-
-    /// `delete_property` with a UTF-8 key. 1=deleted, 0=not deleted, -1=error.
+    /// Delete a property by UTF-8 key. 1=deleted, 0=not deleted, -1=error.
     pub delete_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
@@ -766,7 +719,32 @@ pub struct ZqApi {
         throw: i32,
     ) -> i32,
 
-    /// `get_global` with a UTF-8 name. Returns `value_exception` on error.
-    pub get_global_str:
-        unsafe extern "C" fn(env: ZqRawCtx, name: *const u8, name_len: usize) -> ZqRawValue,
+    /// Get target's length property. Returns -1 for error, otherwise the length.
+    pub get_length_prop: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue) -> i64,
+
+    // ── array ──
+    /// Push an element to an Array. Returns -1 for error, otherwise the new length.
+    pub array_push: unsafe extern "C" fn(env: ZqRawCtx, arr: ZqRawValue, val: ZqRawValue) -> i64,
+
+    // ── promise ──
+    /// Create a pending Promise. GC-rooted until settled.
+    pub new_promise: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
+    /// Settle a promise as fulfilled. Double-settle is a silent no-op.
+    pub promise_resolve:
+        unsafe extern "C" fn(env: ZqRawCtx, promise: ZqRawValue, value: ZqRawValue),
+    /// Settle a promise as rejected. Double-settle is a silent no-op.
+    pub promise_reject:
+        unsafe extern "C" fn(env: ZqRawCtx, promise: ZqRawValue, reason: ZqRawValue),
+
+    // ── async iterator ──
+    /// Create an async iterable iterator. `fetch_fn` is called on the JS
+    /// thread to produce each value. Returns `const_values[SLOT_UNDEFINED]`
+    /// when done, exception sentinel on error.
+    pub new_async_iterator: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        fetch_fn: ZqAsyncIterFetchFn,
+        trace_fn: Option<ZqGcTraceFn>,
+        drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+        opaque: *mut c_void,
+    ) -> ZqRawValue,
 }

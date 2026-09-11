@@ -5,7 +5,12 @@ use std::marker::PhantomData;
 
 use crate::{
     ZqCtx, ZqError,
-    ffi::{ZqApi, ZqCallInfoS, ZqRawValue},
+    ffi::{
+        ZQ_CONST_VALUE_SLOT_EXCEPTION, ZQ_CONST_VALUE_SLOT_FALSE, ZQ_CONST_VALUE_SLOT_INFINITY,
+        ZQ_CONST_VALUE_SLOT_MINUS_INFINITY, ZQ_CONST_VALUE_SLOT_NAN, ZQ_CONST_VALUE_SLOT_NULL,
+        ZQ_CONST_VALUE_SLOT_TRUE, ZQ_CONST_VALUE_SLOT_UNDEFINED, ZQ_CONST_VALUE_SLOT_ZERO, ZqApi,
+        ZqCallInfoS, ZqRawValue,
+    },
     traits::IntoZqValue,
 };
 
@@ -77,35 +82,46 @@ impl<'cx> From<ZqValue<'cx>> for ZqRawValue {
 impl<'cx> ZqValue<'cx> {
     pub fn undefined() -> Self {
         let api = ZqApi::singleton();
-        ZqValue::from(api.value_undefined)
+        ZqValue::from(api.const_values[ZQ_CONST_VALUE_SLOT_UNDEFINED])
     }
 
     pub fn null() -> Self {
         let api = ZqApi::singleton();
-        ZqValue::from(api.value_null)
+        ZqValue::from(api.const_values[ZQ_CONST_VALUE_SLOT_NULL])
     }
 
     pub fn bool(b: bool) -> Self {
         let api = ZqApi::singleton();
-        ZqValue::from(if b { api.value_true } else { api.value_false })
+        ZqValue::from(if b {
+            api.const_values[ZQ_CONST_VALUE_SLOT_TRUE]
+        } else {
+            api.const_values[ZQ_CONST_VALUE_SLOT_FALSE]
+        })
+    }
+
+    pub fn int32(i: i32) -> Self {
+        let api = ZqApi::singleton();
+        Self::from(if i == 0 {
+            api.const_values[ZQ_CONST_VALUE_SLOT_ZERO]
+        } else {
+            unsafe { (api.new_int32)(i) }
+        })
     }
 
     pub fn number(n: f64) -> Self {
         let api = ZqApi::singleton();
         let num = if n.is_nan() {
-            api.value_nan
-        } else if n == 1.0 {
-            api.value_one
-        } else if n == -1.0 {
-            api.value_negative_one
+            api.const_values[ZQ_CONST_VALUE_SLOT_NAN]
         } else if n == 0.0 && n.is_sign_positive() {
-            api.value_zero
+            api.const_values[ZQ_CONST_VALUE_SLOT_ZERO]
         } else if n.is_infinite() {
             if n.is_sign_positive() {
-                api.value_infinity
+                api.const_values[ZQ_CONST_VALUE_SLOT_INFINITY]
             } else {
-                api.value_minus_infinity
+                api.const_values[ZQ_CONST_VALUE_SLOT_MINUS_INFINITY]
             }
+        } else if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+            unsafe { (api.new_int32)(n as i32) }
         } else {
             unsafe { (api.new_number)(n) }
         };
@@ -118,18 +134,18 @@ impl<'cx> ZqValue<'cx> {
         self.raw
     }
 
-    /// The engine's exception sentinel handle (`value_exception`).
+    /// The engine's exception sentinel handle (`const_values[SLOT_EXCEPTION]`).
     /// Trampolines return it to signal "this call threw".
     #[inline(always)]
     pub fn exception_value() -> ZqRawValue {
-        ZqApi::singleton().value_exception
+        ZqApi::singleton().const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION]
     }
 
     /// The type of JS value
     pub fn value_type(&self) -> ZqValueType {
         let api = ZqApi::singleton();
         unsafe {
-            let t = (api.get_value_type)(self.raw);
+            let t = (api.value_get_type)(self.raw);
             debug_assert!(
                 (crate::ffi::ZQ_VALUE_TYPE_UNDEFINED..=crate::ffi::ZQ_VALUE_TYPE_EXCEPTION)
                     .contains(&t)
@@ -141,39 +157,41 @@ impl<'cx> ZqValue<'cx> {
     /// true if the value is JS `undefined`.
     #[inline]
     pub fn is_undefined(&self) -> bool {
-        self.raw == ZqApi::singleton().value_undefined
+        self.raw == ZqApi::singleton().const_values[ZQ_CONST_VALUE_SLOT_UNDEFINED]
     }
 
     /// true if the value is JS `null`.
     #[inline]
     pub fn is_null(&self) -> bool {
-        self.raw == ZqApi::singleton().value_null
+        self.raw == ZqApi::singleton().const_values[ZQ_CONST_VALUE_SLOT_NULL]
     }
 
     /// true if the value is `undefined` or `null`.
     #[inline]
     pub fn is_undefined_or_null(&self) -> bool {
         let api = ZqApi::singleton();
-        self.raw == api.value_undefined || self.raw == api.value_null
+        self.raw == api.const_values[ZQ_CONST_VALUE_SLOT_UNDEFINED]
+            || self.raw == api.const_values[ZQ_CONST_VALUE_SLOT_NULL]
     }
 
     /// true if the value is the boolean `true` or `false`.
     #[inline]
     pub fn is_bool(&self) -> bool {
         let api = ZqApi::singleton();
-        self.raw == api.value_true || self.raw == api.value_false
+        self.raw == api.const_values[ZQ_CONST_VALUE_SLOT_TRUE]
+            || self.raw == api.const_values[ZQ_CONST_VALUE_SLOT_FALSE]
     }
 
-    /// true if the value is the exception sentinel (`value_exception`).
+    /// true if the value is the exception sentinel (`const_values[SLOT_EXCEPTION]`).
     #[inline]
     pub fn is_exception(&self) -> bool {
-        self.raw == ZqApi::singleton().value_exception
+        self.raw == ZqApi::singleton().const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION]
     }
 
     /// true if the value is the canonical `NaN`.
     #[inline]
     pub fn is_nan(&self) -> bool {
-        self.raw == ZqApi::singleton().value_nan
+        self.raw == ZqApi::singleton().const_values[ZQ_CONST_VALUE_SLOT_NAN]
     }
 
     /// ToBoolean: whether the value is truthy (needs a live env).
@@ -200,7 +218,7 @@ impl<'cx> ZqValue<'cx> {
     pub fn as_string(&self, ctx: ZqCtx) -> Result<String, ZqError> {
         let api = ZqApi::singleton();
         let sval = unsafe { (api.value_to_string)(ctx.raw, self.raw) };
-        if sval == api.value_exception {
+        if sval == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ctx.read_string(sval))
@@ -210,8 +228,8 @@ impl<'cx> ZqValue<'cx> {
     /// Read a symbol's description ("" for a description-less symbol).
     pub fn symbol_description(&self, ctx: ZqCtx) -> Result<String, ZqError> {
         let api = ZqApi::singleton();
-        let sval = unsafe { (api.get_symbol_description)(ctx.raw, self.raw) };
-        if sval == api.value_exception {
+        let sval = unsafe { (api.symbol_get_description)(ctx.raw, self.raw) };
+        if sval == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ctx.read_string(sval))
@@ -247,7 +265,7 @@ impl<'cx> ZqValue<'cx> {
         let api = ZqApi::singleton();
         let key = key.into_zq_value(ctx);
         let v = unsafe { (api.get_property)(ctx.raw, self.raw, key.raw()) };
-        if v == api.value_exception {
+        if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
@@ -259,7 +277,7 @@ impl<'cx> ZqValue<'cx> {
     pub fn get_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let v = unsafe { (api.get_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
-        if v == api.value_exception {
+        if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(v))
