@@ -1,3 +1,9 @@
+mod descriptor;
+mod property;
+mod type_;
+
+pub use {descriptor::ZqPropertyDescriptor, type_::ZqValueType};
+
 use std::marker::PhantomData;
 
 use crate::{
@@ -9,13 +15,6 @@ use crate::{
         ZqRawValue,
     },
 };
-
-mod descriptor;
-mod property;
-mod type_;
-
-pub use descriptor::ZqPropertyDescriptor;
-pub use type_::ZqValueType;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,5 +407,4 @@ impl<'cx> ZqValue<'cx> {
             Some(unsafe { &mut *(p.cast::<T>()) })
         }
     }
-
 }

@@ -393,7 +393,11 @@ impl<'cx> ZqValue<'cx> {
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<f64>, ZqError> {
         let v = self.get(ctx, key)?;
-        if v.is_nullish() { Ok(None) } else { v.to_f64(ctx).map(Some) }
+        if v.is_nullish() {
+            Ok(None)
+        } else {
+            v.to_f64(ctx).map(Some)
+        }
     }
 
     /// Get `self[key]` as a `bool`; `None` when absent or nullish.
@@ -403,7 +407,11 @@ impl<'cx> ZqValue<'cx> {
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<bool>, ZqError> {
         let v = self.get(ctx, key)?;
-        if v.is_nullish() { Ok(None) } else { v.to_bool(ctx).map(Some) }
+        if v.is_nullish() {
+            Ok(None)
+        } else {
+            v.to_bool(ctx).map(Some)
+        }
     }
 
     /// Get `self[key]` as an object; `None` when absent/nullish, error when the
