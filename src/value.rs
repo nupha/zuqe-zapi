@@ -104,7 +104,7 @@ impl<'cx> ZqValue<'cx> {
         Self::from(if i == 0 {
             api.const_values[ZQ_CONST_VALUE_SLOT_ZERO]
         } else {
-            unsafe { (api.new_int32)(i) }
+            unsafe { (api.new_number)(i as f64) }
         })
     }
 
@@ -121,7 +121,7 @@ impl<'cx> ZqValue<'cx> {
                 api.const_values[ZQ_CONST_VALUE_SLOT_MINUS_INFINITY]
             }
         } else if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-            unsafe { (api.new_int32)(n as i32) }
+            unsafe { (api.new_number)(n) }
         } else {
             unsafe { (api.new_number)(n) }
         };
@@ -198,7 +198,7 @@ impl<'cx> ZqValue<'cx> {
     pub fn to_number(self, ctx: ZqCtx) -> Result<f64, ZqError> {
         let api = ZqApi::singleton();
         let mut ret = 0.0_f64;
-        let r = unsafe { (api.value_to_float64)(ctx.raw, self.raw, &mut ret) };
+        let r = unsafe { (api.to_number)(ctx.raw, self.raw, &mut ret) };
         if r == 0 { Ok(ret) } else { Err(ZqError) }
     }
 
@@ -206,15 +206,18 @@ impl<'cx> ZqValue<'cx> {
     pub fn to_f64(self, ctx: ZqCtx) -> Result<f64, ZqError> {
         let api = ZqApi::singleton();
         let mut ret = 0.0_f64;
-        let r = unsafe { (api.value_to_float64)(ctx.raw, self.raw, &mut ret) };
+        let r = unsafe { (api.to_number)(ctx.raw, self.raw, &mut ret) };
         if r == 0 { Ok(ret) } else { Err(ZqError) }
     }
 
-    /// Coerce to number (i64)
+    /// Coerce to number (i64).
+    ///
+    /// Numbers saturate. A BigInt is converted exactly; it errors (with a
+    /// `RangeError`) when it does not fit in `i64`.
     pub fn to_i64(self, ctx: ZqCtx) -> Result<i64, ZqError> {
         let api = ZqApi::singleton();
         let mut ret = 0_i64;
-        let r = unsafe { (api.value_to_int64)(ctx.raw, self.raw, &mut ret) };
+        let r = unsafe { (api.to_int64)(ctx.raw, self.raw, &mut ret) };
         if r == 0 { Ok(ret) } else { Err(ZqError) }
     }
 
@@ -223,17 +226,34 @@ impl<'cx> ZqValue<'cx> {
         self.to_i64(ctx).map(|n| n as i32)
     }
 
+    /// Coerce to an ECMAScript `ToInt32` (wrapping modulo 2^32).
+    ///
+    /// Unlike [`ZqValue::to_i32`] (which saturates through `i64`), this follows
+    /// the spec's modular semantics. For `ToUint32`, use `to_int32(...) as u32`.
+    pub fn to_int32(self, ctx: ZqCtx) -> Result<i32, ZqError> {
+        let api = ZqApi::singleton();
+        let mut ret = 0_i32;
+        let r = unsafe { (api.to_int32)(ctx.raw, self.raw, &mut ret) };
+        if r == 0 { Ok(ret) } else { Err(ZqError) }
+    }
+
+    /// Strict equality (`===`). Never throws.
+    pub fn strict_equal(&self, other: &ZqValue<'_>) -> bool {
+        let api = ZqApi::singleton();
+        unsafe { (api.is_strictly_equal)(self.raw, other.raw) != 0 }
+    }
+
     /// Coerce to bool
     pub fn to_bool(self, ctx: ZqCtx<'cx>) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
-        let r = unsafe { (api.value_to_bool)(ctx.raw, self.raw) };
+        let r = unsafe { (api.to_boolean)(ctx.raw, self.raw) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Coerce to string
     pub fn to_string(self, ctx: ZqCtx) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
-        let sval = unsafe { (api.value_to_string)(ctx.raw, self.raw) };
+        let sval = unsafe { (api.to_string)(ctx.raw, self.raw) };
         if sval == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -281,13 +301,8 @@ impl<'cx> ZqValue<'cx> {
 
     /// Get Symbol's description and encode to utf8
     pub fn symbol_description_utf8(&self, ctx: ZqCtx) -> Result<String, ZqError> {
-        let api = ZqApi::singleton();
-        let sval = unsafe { (api.symbol_get_description)(ctx.raw, self.raw) };
-        if sval == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
-            Err(ZqError)
-        } else {
-            Self::from(sval).string_encode_utf8(ctx)
-        }
+        // Symbol.prototype.description getter (ECMA-262 §20.4.3.2).
+        self.get_str(ctx, "description")?.string_encode_utf8(ctx)
     }
 
     /// For native object value with payload, returns payload ref
@@ -318,7 +333,7 @@ impl<'cx> ZqValue<'cx> {
     ) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let key = key.into_zq_value(ctx);
-        let v = unsafe { (api.get_property)(ctx.raw, self.raw, key.raw()) };
+        let v = unsafe { (api.get_value)(ctx.raw, self.raw, key.raw()) };
         if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -330,7 +345,7 @@ impl<'cx> ZqValue<'cx> {
     /// string (the host resolves the key to an interned atom).
     pub fn get_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
-        let v = unsafe { (api.get_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
+        let v = unsafe { (api.get)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
         if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -348,7 +363,7 @@ impl<'cx> ZqValue<'cx> {
         let api = ZqApi::singleton();
         let key = key.into_zq_value(ctx);
         let val = val.into_zq_value(ctx);
-        let r = unsafe { (api.set_property)(ctx.raw, self.raw, key.raw(), val.raw()) };
+        let r = unsafe { (api.set_value)(ctx.raw, self.raw, key.raw(), val.raw()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
@@ -361,9 +376,7 @@ impl<'cx> ZqValue<'cx> {
     ) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let val = val.into_zq_value(ctx);
-        let r = unsafe {
-            (api.set_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len(), val.raw())
-        };
+        let r = unsafe { (api.set)(ctx.raw, self.raw, key.as_ptr(), key.len(), val.raw()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
@@ -371,14 +384,14 @@ impl<'cx> ZqValue<'cx> {
     pub fn has<T: IntoZqValue<'cx>>(&self, cx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let key = key.into_zq_value(cx);
-        let r = unsafe { (api.has_property)(cx.raw, self.raw, key.raw()) };
+        let r = unsafe { (api.has_value)(cx.raw, self.raw, key.raw()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Check whether a property exists (UTF-8 key, no intermediate JS string).
     pub fn has_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
-        let r = unsafe { (api.has_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
+        let r = unsafe { (api.has_property)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
@@ -386,25 +399,21 @@ impl<'cx> ZqValue<'cx> {
     pub fn delete<T: IntoZqValue<'cx>>(&self, ctx: ZqCtx<'cx>, key: T) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let key = key.into_zq_value(ctx);
-        let r = unsafe { (api.delete_property)(ctx.raw, self.raw, key.raw()) };
+        let r = unsafe { (api.delete_value)(ctx.raw, self.raw, key.raw()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Delete a property by UTF-8 key without allocating an intermediate JS string.
-    pub fn delete_str<T: IntoZqValue<'cx>>(
-        &self,
-        ctx: ZqCtx<'cx>,
-        key: &str,
-    ) -> Result<bool, ZqError> {
+    pub fn delete_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
-        let r = unsafe { (api.delete_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
+        let r = unsafe { (api.delete_property)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Get length property of value
     pub fn get_length_prop(&self, cx: ZqCtx<'cx>) -> Result<usize, ZqError> {
         let api = ZqApi::singleton();
-        let len = unsafe { (api.get_length_prop)(cx.raw, self.raw) };
+        let len = unsafe { (api.length_of_array_like)(cx.raw, self.raw) };
         if len < 0 {
             Err(ZqError)
         } else {
@@ -441,7 +450,7 @@ impl<'cx> ZqValue<'cx> {
         let api = ZqApi::singleton();
         let mut argv: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
         let v = unsafe {
-            (api.invoke)(
+            (api.invoke_value)(
                 ctx.raw,
                 self.raw,
                 method.raw(),
@@ -466,7 +475,7 @@ impl<'cx> ZqValue<'cx> {
         let api = ZqApi::singleton();
         let mut argv: Vec<ZqRawValue> = args.iter().map(|v| v.raw()).collect();
         let v = unsafe {
-            (api.invoke_str)(
+            (api.invoke)(
                 ctx.raw,
                 self.raw,
                 method.as_ptr(),
@@ -482,11 +491,10 @@ impl<'cx> ZqValue<'cx> {
         }
     }
 
-    /// `Array.prototype.push`.
+    /// `Array.prototype.push` — implemented as `arr.push(val)`.
     pub fn array_push(&self, ctx: ZqCtx, val: ZqValue) -> Result<usize, ZqError> {
-        let api = ZqApi::singleton();
-        let r = unsafe { (api.array_push)(ctx.raw, self.raw, val.raw()) };
-        if r < 0 { Err(ZqError) } else { Ok(r as usize) }
+        let r = self.invoke_str(ctx, "push", &[val])?;
+        r.to_i64(ctx).map(|n| n as usize)
     }
 }
 

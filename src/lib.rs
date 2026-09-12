@@ -19,7 +19,7 @@ pub use {
     __private::module_path,
     channel::ZqWakeSender,
     class::Class,
-    ctx::{ZqCtx, ZqWakeHandle},
+    ctx::{ZqCtx, ZqPromiseCapability, ZqWakeHandle},
     error::{ZqError, ZqErrorType},
     ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue},
     gc::{ZqGcTrace, ZqGcTraceCtx},
