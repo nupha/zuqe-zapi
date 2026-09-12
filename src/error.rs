@@ -62,7 +62,7 @@ impl<'cx> ZqCtx<'cx> {
     #[cold]
     #[must_use]
     pub fn throw(&self, err_type: ZqErrorType, err_msg: &str) -> ZqError {
-        if let Ok(e) = self.new_error(err_type, err_msg) {
+        if let Ok(e) = ZqValue::error(*self, err_type, err_msg) {
             self.throw_value(e);
         }
         ZqError

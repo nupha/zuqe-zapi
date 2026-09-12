@@ -104,6 +104,29 @@ pub struct ZqPromiseCapabilityS {
     pub reject: ZqRawValue,
 }
 
+/// `ZqPropertyDescriptorS.kind` — a data property (`value`).
+pub const ZQ_PROP_KIND_DATA: i32 = 0;
+/// `ZqPropertyDescriptorS.kind` — an accessor property (`get`/`set`).
+pub const ZQ_PROP_KIND_ACCESSOR: i32 = 1;
+
+/// A property descriptor (ECMA-262 §6.2.5), filled by
+/// `get_own_property_descriptor`. A property's attributes are always fully
+/// present once it exists, so `flags` carries the actual `ZQ_PROP_*` values.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ZqPropertyDescriptorS {
+    /// `ZQ_PROP_KIND_*`.
+    pub kind: i32,
+    /// `ZQ_PROP_*` attributes (configurable/writable/enumerable).
+    pub flags: u32,
+    /// Data property: the property value.
+    pub value: ZqRawValue,
+    /// Accessor property: the getter (`undefined` when absent).
+    pub get: ZqRawValue,
+    /// Accessor property: the setter (`undefined` when absent).
+    pub set: ZqRawValue,
+}
+
 /// zapi function body FFI signature.
 ///
 /// **The return value IS the JS value**: on success, return the result handle;
@@ -594,30 +617,6 @@ pub struct ZqApi {
     /// `undefined` if none.
     pub exception: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
 
-    // ── job queue (cross-thread async bridge) ──
-    /// Queue a host job on this context's event loop: `run_fn(data, env)` runs
-    /// once per tick until it's Done/Blocked/Continue.
-    ///
-    /// Host-specific; the JS-visible concept is a Job (§9.5).
-    /// Returns 0 on success, <0 on error.
-    pub add_polling_job: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        run_fn: ZqJobRunFn,
-        trace_fn: Option<ZqJobTraceFn>,
-        data: *mut c_void,
-    ) -> i32,
-
-    // ── event-loop wake (cross-thread) ──
-    /// Create an opaque waker bound to this context's event loop.
-    /// Host-specific (event loop).
-    pub new_waker: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqWakeHandleS,
-
-    /// Wake the parked JS event loop. Safe from any thread. Host-specific.
-    pub waker_wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
-
-    /// Release a waker. Host-specific.
-    pub waker_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
-
     // ── GC ──
     /// Mark `val` as reachable during a GC trace.
     /// Host-specific (garbage collection). Returns 0 on success, <0 on error.
@@ -648,62 +647,17 @@ pub struct ZqApi {
     ) -> i32,
 
     // ── function call ──
-    /// Call `info.target(info.this, ...info.argv)`.
+    /// Call `info.target(cc.this, ...cc.argv)`.
     ///
     /// ECMA-262: Call (§7.3.13).
     /// Returns the result value, or the exception sentinel on error.
-    pub call: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
+    pub call: unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS) -> ZqRawValue,
 
-    /// `new info.target(...info.argv)`.
+    /// `new info.target(...cc.argv)`.
     ///
     /// ECMA-262: Construct (§7.3.14).
     /// Returns the result value, or the exception sentinel on error.
-    pub construct: unsafe extern "C" fn(env: ZqRawCtx, info: *mut ZqCallInfoS) -> ZqRawValue,
-
-    /// `target[method](...argv)` with `target` as `this`.
-    ///
-    /// ECMA-262: Invoke (§7.3.20). `method` is UTF-8 and is interned on the host
-    /// (no intermediate JS string); custom Symbol methods use `invoke_value`.
-    /// Returns the result value, or the exception sentinel on error (including
-    /// a missing or non-callable method).
-    pub invoke: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        method: *const u8,
-        method_len: usize,
-        argc: usize,
-        argv: *mut ZqRawValue,
-    ) -> ZqRawValue,
-
-    /// `target[method](...argv)` with a raw value key (custom Symbol methods).
-    /// Same ECMA-262 operation as `invoke`.
-    /// Returns the result value, or the exception sentinel on error.
-    pub invoke_value: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        method: ZqRawValue,
-        argc: usize,
-        argv: *mut ZqRawValue,
-    ) -> ZqRawValue,
-
-    // ── native object / class ──
-    /// Register a class definition with the host.
-    /// Host-specific (embedder class registry).
-    /// Returns the class ID (>= 0), or <0 on error.
-    pub register_class: unsafe extern "C" fn(env: ZqRawCtx, class_def: *const ZqClassDef) -> i32,
-
-    /// Create a new instance of `class_def` carrying `payload`.
-    /// Host-specific (cf. OrdinaryCreateFromConstructor §10.1.13).
-    /// Returns the new object, or the exception sentinel on error.
-    pub new_instance: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        class_def: *const ZqClassDef,
-        payload: *mut c_void,
-    ) -> ZqRawValue,
-
-    /// Return the native payload pointer of a host-class instance, or null when
-    /// `obj` is not one. Host-specific.
-    pub get_native_ptr: unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue) -> *mut c_void,
+    pub construct: unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS) -> ZqRawValue,
 
     /// Create a callable backed by `run_fn` with `name` and dispatch `magic`.
     ///
@@ -716,47 +670,81 @@ pub struct ZqApi {
         magic: i32,
     ) -> ZqRawValue,
 
+    // ── native object / class ──
+    /// Register a class definition with the host.
+    /// Host-specific (embedder class registry).
+    /// Returns the class ID (>= 0), or <0 on error.
+    pub register_class: unsafe extern "C" fn(env: ZqRawCtx, class_def: *const ZqClassDef) -> i32,
+
+    /// Create a new instance of `class_def` carrying the opaque `payload`,
+    /// using the class's prototype. No JS constructor runs.
+    ///
+    /// Host-specific (native-class allocation; roughly
+    /// `OrdinaryObjectCreate(proto)` plus an engine payload — **not**
+    /// `OrdinaryCreateFromConstructor`: there is no `newTarget` and the
+    /// constructor is never invoked).
+    /// Returns the new object, or the exception sentinel on error.
+    pub new_instance: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        class_def: *const ZqClassDef,
+        payload: *mut c_void,
+    ) -> ZqRawValue,
+
+    /// Return the native payload pointer of a host-class instance, or null when
+    /// `obj` is not one. Host-specific.
+    pub get_native_ptr: unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue) -> *mut c_void,
+
+    // ── instanceof (Symbol.hasInstance / OrdinaryHasInstance) ──
+    /// `val instanceof target` for an arbitrary constructor value (honours
+    /// `Symbol.hasInstance`).
+    ///
+    /// ECMA-262: InstanceofOperator (§13.10.2) / OrdinaryHasInstance (§7.3.21).
+    /// Returns 1/0, or -1 on error.
+    pub instanceof: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue, target: ZqRawValue) -> i32,
+
+    /// `instanceof` against a native class registered via `register_class`.
+    /// Host-specific fast path (resolves the class's constructor directly).
+    /// Returns 1/0, or -1 on error.
+    pub instanceof_class:
+        unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue, class_def: *const ZqClassDef) -> i32,
+
     // ── property access ──
-    // Keys are UTF-8 `(ptr, len)` and are interned on the host, so a repeated
-    // literal key is **allocation-free** (much cheaper than building a JS string
-    // key). Custom Symbol keys — which UTF-8 cannot express — use the `*_value`
-    // escape hatches below.
+    // The canonical form takes the key as a raw JS value (a String or Symbol —
+    // ECMA-262 PropertyKey). The `_str` variants take a UTF-8 `(ptr, len)` key
+    // that the host interns with no intermediate JS string; use them for
+    // constant/literal keys.
     /// Get `target[key]`.
     ///
     /// ECMA-262: Get (§7.3.2) / GetV (§7.3.3).
     /// Returns the value, or the exception sentinel on error.
-    pub get: unsafe extern "C" fn(
+    pub get_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
+
+    /// `get_property` with a UTF-8 `(ptr, len)` key, interned on the host.
+    pub get_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
         key: *const u8,
         key_len: usize,
     ) -> ZqRawValue,
 
-    /// Get `target[key]` with a raw value key (custom Symbol).
-    /// Same ECMA-262 operation as `get`.
-    /// Returns the value, or the exception sentinel on error.
-    pub get_value:
-        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> ZqRawValue,
-
     /// Set `target[key] = val`, throwing on failure.
     ///
     /// ECMA-262: Set (§7.3.4, throw=true).
     /// Returns 1=set, 0=not set, -1=error.
-    pub set: unsafe extern "C" fn(
+    pub set_property: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: ZqRawValue,
+        val: ZqRawValue,
+    ) -> i32,
+
+    /// `set_property` with a UTF-8 `(ptr, len)` key.
+    pub set_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
         key: *const u8,
         key_len: usize,
-        val: ZqRawValue,
-    ) -> i32,
-
-    /// Set `target[key] = val` with a raw value key (custom Symbol).
-    /// Same ECMA-262 operation as `set`.
-    /// Returns 1=set, 0=not set, -1=error.
-    pub set_value: unsafe extern "C" fn(
-        env: ZqRawCtx,
-        target: ZqRawValue,
-        key: ZqRawValue,
         val: ZqRawValue,
     ) -> i32,
 
@@ -764,17 +752,16 @@ pub struct ZqApi {
     ///
     /// ECMA-262: HasProperty (§7.3.11).
     /// Returns 1=present, 0=absent, -1=error.
-    pub has_property: unsafe extern "C" fn(
+    pub has_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
+
+    /// `has_property` with a UTF-8 `(ptr, len)` key.
+    pub has_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
         key: *const u8,
         key_len: usize,
     ) -> i32,
-
-    /// Test `key in target` with a raw value key (custom Symbol).
-    /// Same ECMA-262 operation as `has_property`.
-    /// Returns 1=present, 0=absent, -1=error.
-    pub has_value: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
 
     /// `delete target[key]`.
     ///
@@ -782,24 +769,68 @@ pub struct ZqApi {
     /// DeletePropertyOrThrow (§7.3.9): a non-configurable property yields 0 here
     /// rather than throwing.
     /// Returns 1=deleted, 0=not deleted, -1=error.
-    pub delete_property: unsafe extern "C" fn(
+    pub delete_property:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
+
+    /// `delete_property` with a UTF-8 `(ptr, len)` key.
+    pub delete_property_str: unsafe extern "C" fn(
         env: ZqRawCtx,
         target: ZqRawValue,
         key: *const u8,
         key_len: usize,
     ) -> i32,
 
-    /// `delete target[key]` with a raw value key (custom Symbol).
-    /// Same ECMA-262 operation as `delete_property`.
-    /// Returns 1=deleted, 0=not deleted, -1=error.
-    pub delete_value:
-        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, key: ZqRawValue) -> i32,
-
-    /// `LengthOfArrayLike(obj)` = `ToLength(? Get(obj, "length"))`.
+    // ── property definition (descriptor) ──
+    // Unlike `set_property`, these honour `flags` (ZQ_PROP_*) and can create accessors,
+    // so they are the only way to install non-enumerable / read-only members.
+    /// Define `target[key]` as a data property with attributes `flags`
+    /// (`ZQ_PROP_*`).
     ///
-    /// ECMA-262: LengthOfArrayLike (§7.3.18).
-    /// Returns -1 on error, otherwise the length.
-    pub length_of_array_like: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue) -> i64,
+    /// ECMA-262: DefinePropertyOrThrow (§7.3.8) / OrdinaryDefineOwnProperty
+    /// (§10.1.9).
+    /// Returns 1=defined, -1=error.
+    pub define_property: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: ZqRawValue,
+        val: ZqRawValue,
+        flags: u32,
+    ) -> i32,
+
+    /// `define_property` with a UTF-8 `(ptr, len)` key.
+    pub define_property_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+        val: ZqRawValue,
+        flags: u32,
+    ) -> i32,
+
+    /// Define `target[key]` as an accessor property. `get`/`set` are function
+    /// values or `undefined`.
+    ///
+    /// ECMA-262: OrdinaryDefineOwnProperty (§10.1.9) / ValidateAndApplyPropertyDescriptor (§10.1.6).
+    /// Returns 1=defined, -1=error.
+    pub define_accessor: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: ZqRawValue,
+        get: ZqRawValue,
+        set: ZqRawValue,
+        flags: u32,
+    ) -> i32,
+
+    /// `define_accessor` with a UTF-8 `(ptr, len)` key.
+    pub define_accessor_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+        get: ZqRawValue,
+        set: ZqRawValue,
+        flags: u32,
+    ) -> i32,
 
     // ── value constructors ──
     /// Create a Number value from an f64. ECMA-262: the Number type (§6.1.6).
@@ -810,11 +841,25 @@ pub struct ZqApi {
     /// Returns the string, or the exception sentinel on failure.
     pub new_string: unsafe extern "C" fn(env: ZqRawCtx, ptr: *const u8, len: usize) -> ZqRawValue,
 
+    /// Create a Symbol value with description `desc` (UTF-8).
+    ///
+    /// ECMA-262: Symbol (§20.4). Returns the symbol, or the exception sentinel
+    /// on failure.
+    pub new_symbol: unsafe extern "C" fn(env: ZqRawCtx, ptr: *const u8, len: usize) -> ZqRawValue,
+
     /// Create a plain object with %Object.prototype%.
     ///
     /// ECMA-262: OrdinaryObjectCreate (§10.1.12).
     /// Returns the object, or the exception sentinel on error.
     pub ordinary_object_create: unsafe extern "C" fn(env: ZqRawCtx) -> ZqRawValue,
+
+    /// Create a plain object with prototype `proto` (a null prototype when
+    /// `proto` is `null` or `undefined`).
+    ///
+    /// ECMA-262: OrdinaryObjectCreate (§10.1.12).
+    /// Returns the object, or the exception sentinel on error.
+    pub ordinary_object_create_with_proto:
+        unsafe extern "C" fn(env: ZqRawCtx, proto: ZqRawValue) -> ZqRawValue,
 
     /// Create an Array from `elements`.
     ///
@@ -830,6 +875,23 @@ pub struct ZqApi {
     /// are split apart, and the internal exception sentinel is exposed. Not
     /// exactly `Type(x)`, which folds Function into Object.
     pub value_get_type: unsafe extern "C" fn(val: ZqRawValue) -> i32,
+
+    /// `IsArray(val)` (honours Proxy).
+    ///
+    /// ECMA-262: IsArray (§7.2.2).
+    /// Returns 1=array, 0=not, -1=error.
+    pub is_array: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> i32,
+
+    /// `IsCallable(val)`.
+    ///
+    /// ECMA-262: IsCallable (§7.2.4).
+    /// Returns 1=callable, 0=not; never throws.
+    pub is_callable: unsafe extern "C" fn(val: ZqRawValue) -> i32,
+
+    /// Whether `val` has a `[[Construct]]` internal method.
+    /// Host refinement of IsConstructor (§7.2.4).
+    /// Returns 1=constructor, 0=not; never throws.
+    pub is_constructor: unsafe extern "C" fn(val: ZqRawValue) -> i32,
 
     /// `a === b` (no coercion).
     ///
@@ -886,6 +948,96 @@ pub struct ZqApi {
         offset: usize,
     ) -> i32,
 
+    // ════════════════════════════════════════════════════════════════════
+    // Non-primitive extensions & conveniences — composed from the primitives
+    // above, or host-specific async facilities.
+    // ════════════════════════════════════════════════════════════════════
+
+    // ── call conveniences (get + call / construct) ──
+    /// `target[method](...argv)` with `target` as `this`.
+    ///
+    /// ECMA-262: Invoke (§7.3.20). `method` is a raw JS value key.
+    /// Returns the result value, or the exception sentinel on error (including
+    /// a missing or non-callable method).
+    pub invoke: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        method: ZqRawValue,
+        argc: usize,
+        argv: *mut ZqRawValue,
+    ) -> ZqRawValue,
+
+    /// `invoke` with a UTF-8 `(ptr, len)` method name, interned on the host.
+    pub invoke_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        method: *const u8,
+        method_len: usize,
+        argc: usize,
+        argv: *mut ZqRawValue,
+    ) -> ZqRawValue,
+
+    /// `LengthOfArrayLike(obj)` = `ToLength(? Get(obj, "length"))`.
+    ///
+    /// ECMA-262: LengthOfArrayLike (§7.3.18).
+    /// Returns -1 on error, otherwise the length.
+    pub length_of_array_like: unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue) -> i64,
+
+    // ── own property introspection ──
+    /// Read the own property descriptor of `target[key]`.
+    ///
+    /// ECMA-262: OrdinaryGetOwnProperty (§10.1.5) /
+    /// ValidateAndApplyPropertyDescriptor (§10.1.6).
+    /// Writes `*out` and returns 1=present, 0=absent, -1=error.
+    pub get_own_property_descriptor: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: ZqRawValue,
+        out: *mut ZqPropertyDescriptorS,
+    ) -> i32,
+
+    /// `get_own_property_descriptor` with a UTF-8 `(ptr, len)` key.
+    /// Writes `*out` and returns 1=present, 0=absent, -1=error.
+    pub get_own_property_descriptor_str: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        target: ZqRawValue,
+        key: *const u8,
+        key_len: usize,
+        out: *mut ZqPropertyDescriptorS,
+    ) -> i32,
+
+    /// All own property keys of `target` as a fresh Array (integer keys in
+    /// ascending order, then strings in insertion order, then symbols when
+    /// `include_symbols` is non-zero).
+    ///
+    /// ECMA-262: OwnPropertyKeys (§10.1.11) / EnumerableOwnProperties (§7.3.22).
+    /// Returns the Array, or the exception sentinel on error.
+    pub get_own_property_names:
+        unsafe extern "C" fn(env: ZqRawCtx, target: ZqRawValue, include_symbols: i32) -> ZqRawValue,
+
+    // ── error object creation (construct the Error/NativeError global) ──
+    /// Create (do not throw) an Error/NativeError of `err_type` (a
+    /// `ZQ_ERR_TYPE_*` constant) with `message`.
+    ///
+    /// ECMA-262: Error (§20.5.1.1) / NativeError (§20.5.6.1.1).
+    /// Returns the error value, or the exception sentinel on failure.
+    pub new_error: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        err_type: i32,
+        message: *const u8,
+        message_len: usize,
+    ) -> ZqRawValue,
+
+    // ── BigInt construction (call the BigInt global) ──
+    // Read back through `to_int64` (handles Number and BigInt).
+    /// Create a BigInt value from an i64. ECMA-262: the BigInt type (§6.1.7).
+    /// Returns the BigInt, or the exception sentinel on failure.
+    pub new_bigint_i64: unsafe extern "C" fn(env: ZqRawCtx, v: i64) -> ZqRawValue,
+
+    /// Create a BigInt value from a u64. ECMA-262: the BigInt type (§6.1.7).
+    /// Returns the BigInt, or the exception sentinel on failure.
+    pub new_bigint_u64: unsafe extern "C" fn(env: ZqRawCtx, v: u64) -> ZqRawValue,
+
     // ── promise ──
     /// `NewPromiseCapability(%Promise%)`: create a pending Promise together with
     /// its `[[Resolve]]` / `[[Reject]]` functions.
@@ -911,34 +1063,27 @@ pub struct ZqApi {
         opaque: *mut c_void,
     ) -> ZqRawValue,
 
-    // ── instanceof ──
-    /// `val instanceof class_def`'s constructor (honours `Symbol.hasInstance`).
+    // ── job queue (cross-thread async bridge) ──
+    /// Queue a host job on this context's event loop: `run_fn(data, env)` runs
+    /// once per tick until it's Done/Blocked/Continue.
     ///
-    /// ECMA-262: InstanceofOperator (§13.10.2) / OrdinaryHasInstance (§7.3.21).
-    /// Returns 1/0, or -1 on error.
-    pub instanceof_operator:
-        unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue, class_def: *const ZqClassDef) -> i32,
-
-    // ── error object creation ──
-    /// Create (do not throw) an Error/NativeError of `err_type` (a
-    /// `ZQ_ERR_TYPE_*` constant) with `message`.
-    ///
-    /// ECMA-262: Error (§20.5.1.1) / NativeError (§20.5.6.1.1).
-    /// Returns the error value, or the exception sentinel on failure.
-    pub new_error: unsafe extern "C" fn(
+    /// Host-specific; the JS-visible concept is a Job (§9.5).
+    /// Returns 0 on success, <0 on error.
+    pub add_polling_job: unsafe extern "C" fn(
         env: ZqRawCtx,
-        err_type: i32,
-        message: *const u8,
-        message_len: usize,
-    ) -> ZqRawValue,
+        run_fn: ZqJobRunFn,
+        trace_fn: Option<ZqJobTraceFn>,
+        data: *mut c_void,
+    ) -> i32,
 
-    // ── BigInt construction ──
-    // Read back through `to_int64` (handles Number and BigInt).
-    /// Create a BigInt value from an i64. ECMA-262: the BigInt type (§6.1.7).
-    /// Returns the BigInt, or the exception sentinel on failure.
-    pub new_bigint_i64: unsafe extern "C" fn(env: ZqRawCtx, v: i64) -> ZqRawValue,
+    // ── event-loop wake (cross-thread) ──
+    /// Create an opaque waker bound to this context's event loop.
+    /// Host-specific (event loop).
+    pub new_waker: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqWakeHandleS,
 
-    /// Create a BigInt value from a u64. ECMA-262: the BigInt type (§6.1.7).
-    /// Returns the BigInt, or the exception sentinel on failure.
-    pub new_bigint_u64: unsafe extern "C" fn(env: ZqRawCtx, v: u64) -> ZqRawValue,
+    /// Wake the parked JS event loop. Safe from any thread. Host-specific.
+    pub waker_wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
+
+    /// Release a waker. Host-specific.
+    pub waker_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
 }

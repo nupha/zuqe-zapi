@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
 
+pub mod call_info;
 pub mod channel;
 pub mod class;
 pub mod ctx;
@@ -8,7 +9,6 @@ pub mod error;
 pub mod ffi;
 pub mod gc;
 pub mod iter;
-pub mod traits;
 pub mod value;
 
 // Internal module for proc-macro generated code.
@@ -17,6 +17,7 @@ pub mod __private;
 
 pub use {
     __private::module_path,
+    call_info::ZqCallInfo,
     channel::ZqWakeSender,
     class::Class,
     ctx::{ZqCtx, ZqPromiseCapability, ZqWakeHandle},
@@ -24,8 +25,7 @@ pub use {
     ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue},
     gc::{ZqGcTrace, ZqGcTraceCtx},
     iter::{AsyncIterResult, ZqAsyncIterable},
-    traits::IntoZqValue,
-    value::{ZqCallInfo, ZqValue, ZqValueType},
+    value::{ZqPropertyDescriptor, ZqValue, ZqValueType},
 };
 
 impl ZqApi {
