@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 /// A JS value type (`typeof` style). `#[repr(i32)]`, cbindgen translates to C enum.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

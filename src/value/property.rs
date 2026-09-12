@@ -1,8 +1,12 @@
-use super::{ZqPropertyDescriptor, ZqValue, ZqValueType};
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 use crate::{
     ZqCtx, ZqError,
     ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqPropertyDescriptorS, ZqRawValue},
 };
+
+use super::{ZqPropertyDescriptor, ZqValue, ZqValueType};
 
 impl<'cx> ZqValue<'cx> {
     /// Get a property (works for objects, arrays, typed arrays, ...).

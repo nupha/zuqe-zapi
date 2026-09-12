@@ -1,5 +1,9 @@
-use super::ZqValue;
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 use crate::ffi::{ZQ_PROP_KIND_ACCESSOR, ZqPropertyDescriptorS};
+
+use super::ZqValue;
 
 /// A property descriptor read back by [`ZqValue::own_property_descriptor`].
 #[derive(Debug, Clone, Copy)]
