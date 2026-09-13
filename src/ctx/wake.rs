@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
+
 use crate::ffi::ZqWakeHandleS;
 
 /// Clonable, thread-safe handle to wake the JS event loop from any thread.

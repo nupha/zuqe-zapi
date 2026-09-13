@@ -1,10 +1,15 @@
-use std::ffi::c_void;
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
 
-use super::ZqCtx;
+use std::{ffi::c_void, future::Future, pin::Pin};
+
 use crate::{
     ZqError, ZqGcTraceCtx, ZqValue,
+    channel::ZqWakeSender,
     ffi::{ZqApi, ZqGcTraceCtxS, ZqPromiseCapabilityS, ZqRawCtx, ZqRawValue},
 };
+
+use super::ZqCtx;
 
 /// A PromiseCapability Record (ECMA-262 §27.5.1.1): a pending Promise plus its
 /// `[[Resolve]]` / `[[Reject]]` functions. Settle the promise by calling
@@ -41,8 +46,9 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
-    /// High-level one-shot async: run `work` on a dedicated thread, deliver
-    /// its result to `convert` (JS thread) and settle the returned Promise.
+    /// High-level one-shot async: run `work` on a dedicated blocked thread,
+    /// deliver its result to `convert` (JS thread) and settle the returned
+    /// Promise.
     ///
     /// * `work` — the blocking/long computation; must not touch JS values.
     /// * `convert` — runs on the JS thread; builds the JS value from the
@@ -61,10 +67,66 @@ impl<'cx> ZqCtx<'cx> {
     /// If the work thread finishes without delivering (drop), the Promise
     /// rejects with an internal error — forgetting to deliver cannot hang
     /// the event loop.
+    ///
+    /// For async runtimes that own an executor (e.g. tokio), prefer
+    /// [`spawn_promise_async`](Self::spawn_promise_async), which runs the
+    /// work on that executor instead of spawning one OS thread per call.
     pub fn spawn_promise<T, F, C>(&self, work: F, convert: C) -> Result<ZqValue<'cx>, ZqError>
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
+        C: for<'a> FnOnce(ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
+    {
+        self.spawn_promise_inner(
+            move |tx| {
+                std::thread::spawn(move || {
+                    let t = work();
+                    let _ = tx.send(t); // WakingSender wakes the parked loop automatically.
+                });
+            },
+            convert,
+        )
+    }
+
+    /// Like [`spawn_promise`](Self::spawn_promise), but the work is an async
+    /// [`Future`] submitted to a caller-supplied executor via `spawn` — no OS
+    /// thread is created per call. This keeps `zuqe-zapi` runtime-agnostic:
+    /// pass, for example, `|fut| { tokio_handle.spawn(fut); }` to run the work
+    /// on an existing tokio runtime.
+    ///
+    /// `spawn` receives an erased `Send` future and is expected to drive it to
+    /// completion. Completion is delivered to `convert` on the JS thread and
+    /// settles the returned Promise, exactly as in `spawn_promise`.
+    pub fn spawn_promise_async<T, F, S, C>(
+        &self,
+        fut: F,
+        spawn_fn: S,
+        convert_fn: C,
+    ) -> Result<ZqValue<'cx>, ZqError>
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+        S: FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>),
+        C: for<'a> FnOnce(ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
+    {
+        self.spawn_promise_inner(
+            move |tx| {
+                spawn_fn(Box::pin(async move {
+                    let t = fut.await;
+                    let _ = tx.send(t); // WakingSender wakes the parked loop automatically.
+                }));
+            },
+            convert_fn,
+        )
+    }
+
+    /// Shared plumbing for both `spawn_promise` and `spawn_promise_async`:
+    /// create the capability + wake channel, hand the sender to `launch` (which
+    /// starts the work), and register the polling job that settles the Promise.
+    fn spawn_promise_inner<T, L, C>(&self, launch: L, convert: C) -> Result<ZqValue<'cx>, ZqError>
+    where
+        T: Send + 'static,
+        L: FnOnce(ZqWakeSender<T>),
         C: for<'a> FnOnce(ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
     {
         let api = ZqApi::singleton();
@@ -75,11 +137,6 @@ impl<'cx> ZqCtx<'cx> {
         let cap = self.new_promise_capability()?;
         let (tx, rx) = self.make_wake_channel::<T>();
 
-        std::thread::spawn(move || {
-            let t = work();
-            let _ = tx.send(t); // WakingSender wakes the parked loop automatically.
-        });
-
         let state = Box::new(SpawnState {
             rx,
             convert: Some(convert),
@@ -87,6 +144,7 @@ impl<'cx> ZqCtx<'cx> {
             resolve: cap.resolve.raw(),
             reject: cap.reject.raw(),
         });
+        launch(tx);
         unsafe {
             (api.add_polling_job)(
                 self.raw,
@@ -100,9 +158,10 @@ impl<'cx> ZqCtx<'cx> {
     }
 }
 
-/// State for the [`ZqCtx::spawn_promise`] polling job: the channel, the convert
-/// closure, and the capability's raw handles (so `spawn_trace` can keep the
-/// resolving functions alive while the job is pending).
+/// State for the `spawn_promise` / `spawn_promise_async` polling job: the
+/// channel, the convert closure, and the capability's raw handles (so
+/// `spawn_trace` can keep the resolving functions alive while the job is
+/// pending).
 struct SpawnState<T, C> {
     rx: std::sync::mpsc::Receiver<T>,
     convert: Option<C>,
@@ -111,8 +170,8 @@ struct SpawnState<T, C> {
     reject: ZqRawValue,
 }
 
-/// Polling-job body for `spawn_promise`: settle the capability's promise via its
-/// resolving functions, then free `data` and report `Done`.
+/// Polling-job body for the async bridge: settle the capability's promise via
+/// its resolving functions, then free `data` and report `Done`.
 unsafe extern "C" fn spawn_run<T, C>(data: *mut c_void, raw_ctx: ZqRawCtx) -> i32
 where
     T: 'static,
@@ -165,7 +224,7 @@ where
     }
 }
 
-/// GC trace for the `spawn_promise` job: mark the capability's promise and
+/// GC trace for the async-bridge job: mark the capability's promise and
 /// resolving functions so they survive until the job settles it.
 unsafe extern "C" fn spawn_trace<T, C>(data: *mut c_void, gcx: *mut ZqGcTraceCtxS) {
     let state = unsafe { &*(data as *const SpawnState<T, C>) };
