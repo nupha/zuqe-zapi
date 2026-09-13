@@ -139,7 +139,7 @@ where
                     // and consume it; otherwise use a generic reason.
                     let reason = cx.take_exception();
                     let reason = if reason.is_undefined() {
-                        ZqValue::string(cx, "async work failed").unwrap()
+                        ZqValue::new_string(cx, "async work failed").unwrap()
                     } else {
                         reason
                     };
@@ -157,8 +157,7 @@ where
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             // Worker ended without delivering — deterministic reject.
             state.convert.take();
-            let reason = ZqValue::string(cx, "async work dropped without a result")
-                .unwrap();
+            let reason = ZqValue::new_string(cx, "async work dropped without a result").unwrap();
             let _ = cx.call_function(ZqValue::from(state.reject), ZqValue::undefined(), &[reason]);
             drop(unsafe { Box::from_raw(data as *mut SpawnState<T, C>) });
             0 // Done

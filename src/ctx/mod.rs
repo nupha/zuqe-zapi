@@ -3,9 +3,7 @@ use std::marker::PhantomData;
 use crate::{
     ZqError, ZqRawCtx, ZqValue,
     class::Class,
-    ffi::{
-        ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqRawValue,
-    },
+    ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqRawValue},
 };
 
 mod job;
@@ -166,15 +164,12 @@ impl<'cx> ZqCtx<'cx> {
     /// `JSON.parse(text)`.
     pub fn json_parse(&self, text: &str) -> Result<ZqValue<'cx>, ZqError> {
         let json = self.get_global_str("JSON")?;
-        let arg = ZqValue::string(*self, text)?;
+        let arg = ZqValue::new_string(*self, text)?;
         json.invoke_str(*self, "parse", &[arg])
     }
 
     /// `JSON.stringify(val)`; `None` for values with no JSON form.
-    pub fn json_stringify(
-        &self,
-        val: impl Into<ZqValue<'cx>>,
-    ) -> Result<Option<String>, ZqError> {
+    pub fn json_stringify(&self, val: impl Into<ZqValue<'cx>>) -> Result<Option<String>, ZqError> {
         let json = self.get_global_str("JSON")?;
         let r = json.invoke_str(*self, "stringify", &[val.into()])?;
         if r.is_undefined() {
@@ -229,10 +224,4 @@ impl<'cx> ZqCtx<'cx> {
             Ok(ZqValue::from(r))
         }
     }
-
-    pub fn get_native_ptr(&self, val: ZqValue<'cx>) -> *mut std::ffi::c_void {
-        let api = ZqApi::singleton();
-        unsafe { (api.get_native_ptr)(self.raw, val.raw()) }
-    }
-
 }

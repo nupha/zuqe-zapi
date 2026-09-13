@@ -25,7 +25,7 @@ pub use {
     ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue},
     gc::{ZqGcTrace, ZqGcTraceCtx},
     iter::{AsyncIterResult, ZqAsyncIterable},
-    value::{ZqPropertyDescriptor, ZqValue, ZqValueType},
+    value::{ZqBufKind, ZqPropertyDescriptor, ZqTypedArrayElem, ZqValue, ZqValueType},
 };
 
 impl ZqApi {

@@ -470,6 +470,6 @@ impl<'cx> ZqValue<'cx> {
         T: Into<ZqValue<'cx>>,
     {
         let vals: Vec<ZqValue<'cx>> = elements.into_iter().map(Into::into).collect();
-        Self::array(ctx, &vals)
+        Self::new_array(ctx, &vals)
     }
 }

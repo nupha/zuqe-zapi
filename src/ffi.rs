@@ -63,6 +63,28 @@ pub const ZQ_ERR_TYPE_URI: i32 = 5;
 pub const ZQ_ERR_TYPE_INTERNAL: i32 = 6;
 pub const ZQ_ERR_TYPE_AGGREGATE: i32 = 7;
 
+// ── binary buffer kinds (`ZqApi::buf_kind` / `new_buf_from_bytes`) ──
+//
+// One flat discriminant namespace for every byte container. Values are stable:
+// reserve gaps for future containers rather than renumbering.
+/// Not a byte container (plain object, Array, string, ...).
+pub const ZQ_BUF_NONE: i32 = 0;
+pub const ZQ_BUF_ARRAY_BUFFER: i32 = 1;
+pub const ZQ_BUF_SHARED_ARRAY_BUFFER: i32 = 2;
+pub const ZQ_BUF_DATAVIEW: i32 = 3;
+pub const ZQ_BUF_TYPED_ARRAY_INT8: i32 = 16;
+pub const ZQ_BUF_TYPED_ARRAY_UINT8: i32 = 17;
+pub const ZQ_BUF_TYPED_ARRAY_UINT8C: i32 = 18;
+pub const ZQ_BUF_TYPED_ARRAY_INT16: i32 = 19;
+pub const ZQ_BUF_TYPED_ARRAY_UINT16: i32 = 20;
+pub const ZQ_BUF_TYPED_ARRAY_INT32: i32 = 21;
+pub const ZQ_BUF_TYPED_ARRAY_UINT32: i32 = 22;
+pub const ZQ_BUF_TYPED_ARRAY_FLOAT16: i32 = 23;
+pub const ZQ_BUF_TYPED_ARRAY_FLOAT32: i32 = 24;
+pub const ZQ_BUF_TYPED_ARRAY_FLOAT64: i32 = 25;
+pub const ZQ_BUF_TYPED_ARRAY_BIGINT64: i32 = 26;
+pub const ZQ_BUF_TYPED_ARRAY_BIGUINT64: i32 = 27;
+
 pub struct ZqRawCtxS([u8; 0]);
 
 /// Raw FFI handle for execution context.
@@ -692,7 +714,7 @@ pub struct ZqApi {
 
     /// Return the native payload pointer of a host-class instance, or null when
     /// `obj` is not one. Host-specific.
-    pub get_native_ptr: unsafe extern "C" fn(env: ZqRawCtx, obj: ZqRawValue) -> *mut c_void,
+    pub object_payload: unsafe extern "C" fn(obj: ZqRawValue) -> *mut c_void,
 
     // ── instanceof (Symbol.hasInstance / OrdinaryHasInstance) ──
     /// `val instanceof target` for an arbitrary constructor value (honours
@@ -1076,7 +1098,9 @@ pub struct ZqApi {
         data: *mut c_void,
     ) -> i32,
 
+    //
     // ── event-loop wake (cross-thread) ──
+    //
     /// Create an opaque waker bound to this context's event loop.
     /// Host-specific (event loop).
     pub new_waker: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqWakeHandleS,
@@ -1086,4 +1110,41 @@ pub struct ZqApi {
 
     /// Release a waker. Host-specific.
     pub waker_free: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
+
+    //
+    // ── binary buffers (bulk, O(1) ABI for O(N) data) ──
+    //
+    /// Create a binary buffer by copying `len` bytes from `ptr`. `kind` is a
+    /// `ZQ_BUF_*` discriminant selecting the resulting class (ArrayBuffer,
+    /// SharedArrayBuffer, DataView, or a typed array). The host copies into its
+    /// own allocator, so no ownership crosses the ABI. For typed arrays `len`
+    /// must be a multiple of the element size, otherwise a `RangeError` is
+    /// thrown. Returns the value, or the exception sentinel on failure.
+    pub new_buf_from_bytes:
+        unsafe extern "C" fn(env: ZqRawCtx, kind: i32, ptr: *const u8, len: usize) -> ZqRawValue,
+
+    /// Identify the binary buffer kind of `val`.
+    ///
+    /// Returns a `ZQ_BUF_*` discriminant (`ZQ_BUF_NONE` for anything that is not
+    /// an ArrayBuffer / SharedArrayBuffer / DataView / typed array). Never throws.
+    pub buf_kind: unsafe extern "C" fn(env: ZqRawCtx, val: ZqRawValue) -> i32,
+
+    /// Read raw bytes of a binary buffer (host byte order). Mirrors
+    /// `string_read_utf8` (measure-then-copy):
+    /// * `dst == null`: measurement mode — return the total byte length from
+    ///   `offset` to the end, writing nothing;
+    /// * `dst != null`: copy `min(dst_len, total - offset)` bytes and return the
+    ///   number copied;
+    /// * `val` is not a binary buffer: throws a `TypeError` and returns -1.
+    ///
+    /// A detached or out-of-bounds view reports length 0. `offset` beyond the
+    /// view length copies nothing. Reading a SharedArrayBuffer is a snapshot
+    /// copy and may observe concurrent writes from another agent.
+    pub buf_read_bytes: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        val: ZqRawValue,
+        dst: *mut u8,
+        dst_len: usize,
+        offset: usize,
+    ) -> i64,
 }

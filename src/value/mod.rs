@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
 
+mod buf;
 mod descriptor;
 mod property;
-mod type_;
 
-pub use {descriptor::ZqPropertyDescriptor, type_::ZqValueType};
+pub use {
+    buf::{ZqBufKind, ZqTypedArrayElem},
+    descriptor::ZqPropertyDescriptor,
+};
 
 use std::marker::PhantomData;
 
@@ -18,6 +21,41 @@ use crate::{
         ZqRawValue,
     },
 };
+
+/// A JS value type (`typeof` style). `#[repr(i32)]`, cbindgen translates to C enum.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZqValueType {
+    Undefined = 0,
+    Null = 1,
+    Bool = 2,
+    Number = 3,
+    String = 4,
+    Symbol = 5,
+    Function = 6,
+    Object = 7,
+    BigInt = 8,
+    /// The exception sentinel (`value_exception`); not a normal JS value.
+    Exception = 9,
+}
+
+impl ZqValueType {
+    /// The JS `typeof` name ("undefined", "boolean", ... "object").
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Undefined => "undefined",
+            Self::Null => "object", // JS quirk: `typeof null` is "object"
+            Self::Bool => "boolean",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Symbol => "symbol",
+            Self::Function => "function",
+            Self::Object => "object",
+            Self::BigInt => "bigint",
+            Self::Exception => "exception",
+        }
+    }
+}
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +120,7 @@ impl<'cx> ZqValue<'cx> {
     // ── value constructors (need a context) ──
 
     /// Create a String value.
-    pub fn string(ctx: ZqCtx<'cx>, s: &str) -> Result<Self, ZqError> {
+    pub fn new_string(ctx: ZqCtx<'cx>, s: &str) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let raw = unsafe { (api.new_string)(ctx.raw, s.as_ptr(), s.len()) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -93,7 +131,7 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Create a plain object with `%Object.prototype%`.
-    pub fn object(ctx: ZqCtx<'cx>) -> Result<Self, ZqError> {
+    pub fn new_object(ctx: ZqCtx<'cx>) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let raw = unsafe { (api.ordinary_object_create)(ctx.raw) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -105,7 +143,7 @@ impl<'cx> ZqValue<'cx> {
 
     /// Create a plain object with prototype `proto` (null prototype when
     /// `proto` is `null`/`undefined`).
-    pub fn object_with_proto(ctx: ZqCtx<'cx>, proto: ZqValue<'cx>) -> Result<Self, ZqError> {
+    pub fn new_object_with_proto(ctx: ZqCtx<'cx>, proto: ZqValue<'cx>) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let raw = unsafe { (api.ordinary_object_create_with_proto)(ctx.raw, proto.raw()) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -116,7 +154,7 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Create an Array from `elements`.
-    pub fn array(ctx: ZqCtx<'cx>, elements: &[ZqValue<'cx>]) -> Result<Self, ZqError> {
+    pub fn new_array(ctx: ZqCtx<'cx>, elements: &[ZqValue<'cx>]) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         // `ZqValue` is `repr(transparent)` over `ZqRawValue`, so the slice can
         // be reinterpreted without copying.
@@ -135,7 +173,7 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Create a Symbol with description `desc`.
-    pub fn symbol(ctx: ZqCtx<'cx>, desc: &str) -> Result<Self, ZqError> {
+    pub fn new_symbol(ctx: ZqCtx<'cx>, desc: &str) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let raw = unsafe { (api.new_symbol)(ctx.raw, desc.as_ptr(), desc.len()) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -146,7 +184,7 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Create a BigInt from an `i64`.
-    pub fn bigint_i64(ctx: ZqCtx<'cx>, v: i64) -> Result<Self, ZqError> {
+    pub fn new_bigint_i64(ctx: ZqCtx<'cx>, v: i64) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let raw = unsafe { (api.new_bigint_i64)(ctx.raw, v) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -157,7 +195,7 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Create a BigInt from a `u64`.
-    pub fn bigint_u64(ctx: ZqCtx<'cx>, v: u64) -> Result<Self, ZqError> {
+    pub fn new_bigint_u64(ctx: ZqCtx<'cx>, v: u64) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let raw = unsafe { (api.new_bigint_u64)(ctx.raw, v) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -168,7 +206,7 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Create (but do not throw) an `Error` value of `err_type`.
-    pub fn error(ctx: ZqCtx<'cx>, err_type: ZqErrorType, msg: &str) -> Result<Self, ZqError> {
+    pub fn new_error(ctx: ZqCtx<'cx>, err_type: ZqErrorType, msg: &str) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let raw = unsafe { (api.new_error)(ctx.raw, err_type as i32, msg.as_ptr(), msg.len()) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -389,25 +427,5 @@ impl<'cx> ZqValue<'cx> {
     pub fn symbol_description(&self, ctx: ZqCtx) -> Result<String, ZqError> {
         // Symbol.prototype.description getter (ECMA-262 §20.4.3.2).
         self.get_str(ctx, "description")?.to_utf8_string(ctx)
-    }
-
-    /// For native object value with payload, returns payload ref
-    pub fn payload<T: 'static>(&self, ctx: ZqCtx) -> Option<&T> {
-        let p = ctx.get_native_ptr(*self);
-        if p.is_null() {
-            None
-        } else {
-            Some(unsafe { &*(p.cast::<T>()) })
-        }
-    }
-
-    /// For native object value with payload, returns payload mut ref
-    pub fn payload_mut<T: 'static>(&mut self, ctx: ZqCtx) -> Option<&mut T> {
-        let p = ctx.get_native_ptr(*self);
-        if p.is_null() {
-            None
-        } else {
-            Some(unsafe { &mut *(p.cast::<T>()) })
-        }
     }
 }

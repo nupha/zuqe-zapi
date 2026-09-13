@@ -1,6 +1,9 @@
 use std::ffi::c_void;
 
-use crate::{ZqCtx, ffi::{ZqApi, ZqJobRunFn, ZqRawCtx}};
+use crate::{
+    ZqCtx,
+    ffi::{ZqApi, ZqJobRunFn, ZqRawCtx},
+};
 
 impl<'cx> ZqCtx<'cx> {
     /// Register a polling job: `job` runs once per event-loop tick until it
@@ -27,7 +30,6 @@ impl<'cx> ZqCtx<'cx> {
             );
         }
     }
-
 }
 
 /// Return value of a [`ZqCtx::add_polling_job`] closure.

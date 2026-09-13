@@ -62,17 +62,20 @@ impl<'cx> ZqCtx<'cx> {
     #[cold]
     #[must_use]
     pub fn throw(&self, err_type: ZqErrorType, err_msg: &str) -> ZqError {
-        if let Ok(e) = ZqValue::error(*self, err_type, err_msg) {
-            self.throw_value(e);
+        if let Ok(e) = ZqValue::new_error(*self, err_type, err_msg) {
+            let _ = self.throw_value(e);
         }
         ZqError
     }
 
     /// Raise `val` as the pending exception (an arbitrary value, not only an
     /// Error). Pair with [`ZqCtx::new_error`] to throw a typed error.
-    pub fn throw_value(&self, val: ZqValue<'cx>) {
+    #[cold]
+    #[must_use]
+    pub fn throw_value(&self, val: ZqValue<'cx>) -> ZqError {
         let api = ZqApi::singleton();
         unsafe { (api.throw_value)(self.raw, val.raw()) };
+        ZqError
     }
 
     /// Throw an `EvalError`. Sugar for [`ZqCtx::throw`].
