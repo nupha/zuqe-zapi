@@ -33,7 +33,7 @@ pub type ZqCallbackFn = unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS
 /// `val` is an instance of the class whose payload it casts the pointer to.
 pub unsafe fn get_object_payload_ptr(val: ZqValue<'_>) -> *mut c_void {
     let api = ZqApi::singleton();
-    unsafe { (api.object_payload)(val.raw()) }
+    unsafe { (api.get_object_payload)(val.raw()) }
 }
 
 /// Establish the process-wide `ZqApi` singleton. Idempotent: sets it only on

@@ -133,7 +133,7 @@ impl<'cx> ZqValue<'cx> {
     /// Create a plain object with `%Object.prototype%`.
     pub fn new_object(ctx: ZqCtx<'cx>) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
-        let raw = unsafe { (api.ordinary_object_create)(ctx.raw) };
+        let raw = unsafe { (api.new_object)(ctx.raw) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -145,7 +145,7 @@ impl<'cx> ZqValue<'cx> {
     /// `proto` is `null`/`undefined`).
     pub fn new_object_with_proto(ctx: ZqCtx<'cx>, proto: ZqValue<'cx>) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
-        let raw = unsafe { (api.ordinary_object_create_with_proto)(ctx.raw, proto.raw()) };
+        let raw = unsafe { (api.new_object_with_proto)(ctx.raw, proto.raw()) };
         if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -159,7 +159,7 @@ impl<'cx> ZqValue<'cx> {
         // `ZqValue` is `repr(transparent)` over `ZqRawValue`, so the slice can
         // be reinterpreted without copying.
         let raw = unsafe {
-            (api.create_array_from_list)(
+            (api.new_array)(
                 ctx.raw,
                 elements.len(),
                 elements.as_ptr().cast::<ZqRawValue>(),
@@ -283,7 +283,7 @@ impl<'cx> ZqValue<'cx> {
     pub fn kind(&self) -> ZqValueType {
         let api = ZqApi::singleton();
         unsafe {
-            let t = (api.value_get_type)(self.raw);
+            let t = (api.get_type_of)(self.raw);
             debug_assert!(
                 (crate::ffi::ZQ_VALUE_TYPE_UNDEFINED..=crate::ffi::ZQ_VALUE_TYPE_EXCEPTION)
                     .contains(&t)
@@ -387,14 +387,14 @@ impl<'cx> ZqValue<'cx> {
 
     /// Read string content as UTF-8 into a Rust `String`.
     ///
-    /// Uses the engine's measure-then-copy `string_read_utf8`; no buffer
+    /// Uses the engine's measure-then-copy `read_string_utf8`; no buffer
     /// ownership crosses the ABI, so it is safe regardless of the host's
     /// global allocator (e.g. mimalloc in the `aike` binary).
     pub fn to_utf8_string(&self, ctx: ZqCtx<'cx>) -> Result<String, ZqError> {
         let api = ZqApi::singleton();
         // A null buf is measure mode: returns the byte count, or -1 if `self`
         // is not a string (and sets an exception).
-        let len = unsafe { (api.string_read_utf8)(ctx.raw, self.raw, std::ptr::null_mut(), 0, 0) };
+        let len = unsafe { (api.read_string_utf8)(ctx.raw, self.raw, std::ptr::null_mut(), 0, 0) };
         if len < 0 {
             return Err(ZqError);
         }
@@ -405,13 +405,13 @@ impl<'cx> ZqValue<'cx> {
         let n = if len == 0 {
             0
         } else {
-            unsafe { (api.string_read_utf8)(ctx.raw, self.raw, buf.as_mut_ptr(), len, 0) }
+            unsafe { (api.read_string_utf8)(ctx.raw, self.raw, buf.as_mut_ptr(), len, 0) }
         };
         if n < 0 {
             return Err(ZqError);
         }
 
-        // SAFETY: `string_read_utf8` wrote exactly `n` bytes (n == len when
+        // SAFETY: `read_string_utf8` wrote exactly `n` bytes (n == len when
         // buf_len == len, which is guaranteed by the preceding measure call), so
         // exposing the first `n` bytes never reads uninitialised memory.
         unsafe { buf.set_len(n as usize) };

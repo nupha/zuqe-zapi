@@ -146,7 +146,7 @@ impl<'cx> ZqCtx<'cx> {
         });
         launch(tx);
         unsafe {
-            (api.add_polling_job)(
+            (api.add_job)(
                 self.raw,
                 spawn_run::<T, C>,
                 Some(spawn_trace::<T, C>),

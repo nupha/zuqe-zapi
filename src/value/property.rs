@@ -274,7 +274,7 @@ impl<'cx> ZqValue<'cx> {
     /// Get the array-like `length` (`LengthOfArrayLike`).
     pub fn length(&self, ctx: ZqCtx<'cx>) -> Result<usize, ZqError> {
         let api = ZqApi::singleton();
-        let len = unsafe { (api.length_of_array_like)(ctx.raw, self.raw) };
+        let len = unsafe { (api.get_length)(ctx.raw, self.raw) };
         if len < 0 {
             Err(ZqError)
         } else {

@@ -58,7 +58,7 @@ impl<'cx> ZqCtx<'cx> {
     /// some_val.ok_or_else(|| cx.throw(ZqErrorType::Range, "out of range"))?;
     /// ```
     ///
-    /// Built from the two primitives: `new_error` then `throw_value`.
+    /// Built from the two primitives: `new_error` then `throw`.
     #[cold]
     #[must_use]
     pub fn throw(&self, err_type: ZqErrorType, err_msg: &str) -> ZqError {
@@ -74,7 +74,7 @@ impl<'cx> ZqCtx<'cx> {
     #[must_use]
     pub fn throw_value(&self, val: ZqValue<'cx>) -> ZqError {
         let api = ZqApi::singleton();
-        unsafe { (api.throw_value)(self.raw, val.raw()) };
+        unsafe { (api.throw)(self.raw, val.raw()) };
         ZqError
     }
 

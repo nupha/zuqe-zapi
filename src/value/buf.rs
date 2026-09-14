@@ -109,9 +109,9 @@ impl<'cx> ZqValue<'cx> {
     ///
     /// Reads the engine's class identity directly, unlike `constructor.name`,
     /// so it cannot be spoofed by a redefined `constructor` property.
-    pub fn buf_kind(&self, ctx: ZqCtx<'cx>) -> Result<Option<ZqBufKind>, ZqError> {
+    pub fn get_buf_type(&self, ctx: ZqCtx<'cx>) -> Result<Option<ZqBufKind>, ZqError> {
         let api = ZqApi::singleton();
-        let kind = unsafe { (api.buf_kind)(ctx.raw, self.raw) };
+        let kind = unsafe { (api.get_buf_type)(ctx.raw, self.raw) };
         Ok(ZqBufKind::from_raw(kind))
     }
 
@@ -122,7 +122,7 @@ impl<'cx> ZqValue<'cx> {
     /// value is not a binary buffer.
     pub fn buf_bytes(&self, ctx: ZqCtx<'cx>) -> Result<Vec<u8>, ZqError> {
         let api = ZqApi::singleton();
-        let len = unsafe { (api.buf_read_bytes)(ctx.raw, self.raw, std::ptr::null_mut(), 0, 0) };
+        let len = unsafe { (api.read_buf_bytes)(ctx.raw, self.raw, std::ptr::null_mut(), 0, 0) };
         if len < 0 {
             return Err(ZqError);
         }
@@ -131,7 +131,7 @@ impl<'cx> ZqValue<'cx> {
             return Ok(bytes);
         }
         let copied =
-            unsafe { (api.buf_read_bytes)(ctx.raw, self.raw, bytes.as_mut_ptr(), bytes.len(), 0) };
+            unsafe { (api.read_buf_bytes)(ctx.raw, self.raw, bytes.as_mut_ptr(), bytes.len(), 0) };
         if copied < 0 {
             return Err(ZqError);
         }

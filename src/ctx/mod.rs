@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 John Ray <996351336@qq.com>
 
+mod job;
+mod promise;
+mod wake;
+
+pub use {
+    job::{ZqJob, ZqPoll},
+    promise::ZqPromiseCapability,
+    wake::ZqWakeHandle,
+};
+
 use std::marker::PhantomData;
 
 use crate::{
@@ -8,13 +18,6 @@ use crate::{
     class::Class,
     ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqRawValue},
 };
-
-mod job;
-mod promise;
-mod wake;
-
-pub use promise::ZqPromiseCapability;
-pub use wake::ZqWakeHandle;
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -56,8 +59,8 @@ impl<'cx> ZqCtx<'cx> {
         let api = ZqApi::singleton();
         ZqWakeHandle::from_parts(
             unsafe { (api.new_waker)(self.raw) },
-            api.waker_wake,
-            api.waker_free,
+            api.wake,
+            api.drop_waker,
         )
     }
 
@@ -90,7 +93,7 @@ impl<'cx> ZqCtx<'cx> {
     /// Look up a property on the global object (`globalThis[name]`).
     pub fn get_global_str(&self, name: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
-        let v = unsafe { (api.get_global)(self.raw, name.as_ptr(), name.len()) };
+        let v = unsafe { (api.get_global_str)(self.raw, name.as_ptr(), name.len()) };
         if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
             Err(ZqError)
         } else {
@@ -107,7 +110,7 @@ impl<'cx> ZqCtx<'cx> {
     ) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let val = val.into();
-        let r = unsafe { (api.set_global)(self.raw, name.as_ptr(), name.len(), val.raw()) };
+        let r = unsafe { (api.set_global_str)(self.raw, name.as_ptr(), name.len(), val.raw()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
@@ -164,24 +167,6 @@ impl<'cx> ZqCtx<'cx> {
         }
     }
 
-    /// `JSON.parse(text)`.
-    pub fn json_parse(&self, text: &str) -> Result<ZqValue<'cx>, ZqError> {
-        let json = self.get_global_str("JSON")?;
-        let arg = ZqValue::new_string(*self, text)?;
-        json.invoke_str(*self, "parse", &[arg])
-    }
-
-    /// `JSON.stringify(val)`; `None` for values with no JSON form.
-    pub fn json_stringify(&self, val: impl Into<ZqValue<'cx>>) -> Result<Option<String>, ZqError> {
-        let json = self.get_global_str("JSON")?;
-        let r = json.invoke_str(*self, "stringify", &[val.into()])?;
-        if r.is_undefined() {
-            Ok(None)
-        } else {
-            r.to_utf8_string(*self).map(Some)
-        }
-    }
-
     /// Register a global GC trace callback for values the extension holds
     /// outside the GC heap (thread_locals, static natives). `cb` runs at every
     /// GC and should `mark()` every such value via `ZqGcTraceCtx`.
@@ -225,6 +210,24 @@ impl<'cx> ZqCtx<'cx> {
             Err(ZqError)
         } else {
             Ok(ZqValue::from(r))
+        }
+    }
+
+    /// `JSON.parse(text)`.
+    pub fn json_parse(&self, text: &str) -> Result<ZqValue<'cx>, ZqError> {
+        let json = self.get_global_str("JSON")?;
+        let arg = ZqValue::new_string(*self, text)?;
+        json.invoke_str(*self, "parse", &[arg])
+    }
+
+    /// `JSON.stringify(val)`; `None` for values with no JSON form.
+    pub fn json_stringify(&self, val: impl Into<ZqValue<'cx>>) -> Result<Option<String>, ZqError> {
+        let json = self.get_global_str("JSON")?;
+        let r = json.invoke_str(*self, "stringify", &[val.into()])?;
+        if r.is_undefined() {
+            Ok(None)
+        } else {
+            r.to_utf8_string(*self).map(Some)
         }
     }
 }
