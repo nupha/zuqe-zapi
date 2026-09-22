@@ -18,8 +18,10 @@ impl<'cx> ZqCtx<'cx> {
     ///
     /// The payload may hold GC-managed JS values: [`ZqGcTrace::trace`] marks
     /// them every GC cycle. Implement `ZqJob` (empty `trace` when the payload
-    /// holds no JS values). The payload is dropped when `run` returns
-    /// [`ZqPoll::Done`].
+    /// holds no JS values). The payload is dropped once the job leaves the
+    /// queue — after [`ZqPoll::Done`], or when the runtime cancels it (queue
+    /// torn down at teardown / interrupt) without a normal completion. The
+    /// queue owns the payload in both cases, so the host always frees it.
     pub fn add_job<T: ZqJob + 'static>(&self, job: T) {
         let opaque = Box::into_raw(Box::new(job)).cast::<c_void>();
         unsafe {
@@ -27,6 +29,7 @@ impl<'cx> ZqCtx<'cx> {
                 self.raw,
                 traced_job_run::<T>,
                 Some(traced_job_trace::<T>),
+                traced_job_drop::<T>,
                 opaque,
             );
         }
@@ -92,14 +95,16 @@ unsafe extern "C" fn traced_job_run<T: ZqJob>(data: *mut c_void, raw_ctx: ZqRawC
         job.run(ctx)
     };
     match poll {
-        ZqPoll::Done => {
-            // Done: the payload is consumed — free it (host does not free data).
-            drop(unsafe { Box::from_raw(data as *mut T) });
-            0
-        }
+        ZqPoll::Done => 0,
         ZqPoll::Again => 1,
         ZqPoll::AgainNoHold => 2,
     }
+}
+
+/// Trampoline: host calls this to release the boxed job when it leaves the
+/// queue, whether it ran to completion or was cancelled by runtime teardown.
+unsafe extern "C" fn traced_job_drop<T: ZqJob>(data: *mut c_void) {
+    drop(unsafe { Box::from_raw(data as *mut T) });
 }
 
 /// Trampoline: host calls this every GC cycle with the boxed job.

@@ -137,7 +137,7 @@ impl<'cx> ZqCtx<'cx> {
         let cap = self.new_promise_capability()?;
         let (tx, rx) = self.make_wake_channel::<T>();
 
-        let state = Box::new(SpawnState {
+        let state = Box::new(PromiseState {
             rx,
             convert: Some(convert),
             promise: cap.promise.raw(),
@@ -148,8 +148,9 @@ impl<'cx> ZqCtx<'cx> {
         unsafe {
             (api.add_job)(
                 self.raw,
-                spawn_run::<T, C>,
-                Some(spawn_trace::<T, C>),
+                promise_run::<T, C>,
+                Some(promise_trace::<T, C>),
+                promise_drop::<T, C>,
                 Box::into_raw(state).cast::<c_void>(),
             );
         }
@@ -162,7 +163,7 @@ impl<'cx> ZqCtx<'cx> {
 /// channel, the convert closure, and the capability's raw handles (so
 /// `spawn_trace` can keep the resolving functions alive while the job is
 /// pending).
-struct SpawnState<T, C> {
+struct PromiseState<T, C> {
     rx: std::sync::mpsc::Receiver<T>,
     convert: Option<C>,
     promise: ZqRawValue,
@@ -170,14 +171,22 @@ struct SpawnState<T, C> {
     reject: ZqRawValue,
 }
 
+impl<T, C> PromiseState<T, C> {
+    fn gc_trace(&self, ctx: ZqGcTraceCtx) {
+        let _ = ctx.mark(self.promise);
+        let _ = ctx.mark(self.resolve);
+        let _ = ctx.mark(self.reject);
+    }
+}
+
 /// Polling-job body for the async bridge: settle the capability's promise via
 /// its resolving functions, then free `data` and report `Done`.
-unsafe extern "C" fn spawn_run<T, C>(data: *mut c_void, raw_ctx: ZqRawCtx) -> i32
+unsafe extern "C" fn promise_run<T, C>(data: *mut c_void, raw_ctx: ZqRawCtx) -> i32
 where
     T: 'static,
     C: for<'a> FnOnce(ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
 {
-    let state = unsafe { &mut *(data as *mut SpawnState<T, C>) };
+    let state = unsafe { &mut *(data as *mut PromiseState<T, C>) };
     let cx = ZqCtx::from(raw_ctx);
 
     match state.rx.try_recv() {
@@ -209,7 +218,6 @@ where
                     );
                 }
             }
-            drop(unsafe { Box::from_raw(data as *mut SpawnState<T, C>) });
             0 // Done
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => 1, // Block
@@ -218,18 +226,26 @@ where
             state.convert.take();
             let reason = ZqValue::new_string(cx, "async work dropped without a result").unwrap();
             let _ = cx.call_function(ZqValue::from(state.reject), ZqValue::undefined(), &[reason]);
-            drop(unsafe { Box::from_raw(data as *mut SpawnState<T, C>) });
             0 // Done
         }
     }
 }
 
+/// Drop callback for the async-bridge job: the host frees the boxed state when
+/// the job leaves the queue, whether it settled normally or the runtime tore
+/// the queue down. `spawn_run` must not free it.
+unsafe extern "C" fn promise_drop<T, C>(data: *mut c_void)
+where
+    T: 'static,
+    C: 'static,
+{
+    drop(unsafe { Box::from_raw(data as *mut PromiseState<T, C>) });
+}
+
 /// GC trace for the async-bridge job: mark the capability's promise and
 /// resolving functions so they survive until the job settles it.
-unsafe extern "C" fn spawn_trace<T, C>(data: *mut c_void, gcx: *mut ZqGcTraceCtxS) {
-    let state = unsafe { &*(data as *const SpawnState<T, C>) };
+unsafe extern "C" fn promise_trace<T, C>(data: *mut c_void, gcx: *mut ZqGcTraceCtxS) {
+    let state = unsafe { &*(data as *const PromiseState<T, C>) };
     let ctx = ZqGcTraceCtx::from(gcx);
-    let _ = ctx.mark(state.promise);
-    let _ = ctx.mark(state.resolve);
-    let _ = ctx.mark(state.reject);
+    state.gc_trace(ctx);
 }

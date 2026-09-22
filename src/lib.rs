@@ -22,11 +22,23 @@ pub use {
     class::Class,
     ctx::{ZqCtx, ZqJob, ZqPoll, ZqPromiseCapability, ZqWakeHandle},
     error::{ZqError, ZqErrorType},
-    ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue},
+    ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue, ZqRuntime},
     gc::{ZqGcTrace, ZqGcTraceCtx},
     iter::{AsyncIterResult, ZqAsyncIterable},
     value::{ZqBufKind, ZqPropertyDescriptor, ZqTypedArrayElem, ZqValue, ZqValueType},
 };
+
+/// High-level helpers for the opaque runtime identity handle [`ZqRuntime`]
+/// (defined in `ffi`; kept out of the FFI layer, which stays pure ABI).
+impl ZqRuntime {
+    /// Stable identity of the runtime, usable as a key for extension-owned
+    /// per-runtime state (e.g. a thread_local map). Read-only: it only exposes
+    /// the handle's address, never dereferencing the runtime.
+    #[inline(always)]
+    pub fn id(&self) -> usize {
+        self as *const _ as usize
+    }
+}
 
 impl ZqApi {
     thread_local! {

@@ -6,7 +6,7 @@ use std::ffi::{c_char, c_void};
 /// ABI (binary layout) contract version (high 16 bits of `ZqModuleInfo.version`).
 ///
 /// Meaning: memory layout and function pointer signatures of the `ZqApi` table and structs.
-pub const ZQ_ABI_VERSION: u16 = 1;
+pub const ZQ_ABI_VERSION: u16 = 2;
 
 /// API (feature) version (low 16 bits of `ZqModuleInfo.version`).
 ///
@@ -84,6 +84,12 @@ pub const ZQ_BUF_TYPED_ARRAY_FLOAT32: i32 = 24;
 pub const ZQ_BUF_TYPED_ARRAY_FLOAT64: i32 = 25;
 pub const ZQ_BUF_TYPED_ARRAY_BIGINT64: i32 = 26;
 pub const ZQ_BUF_TYPED_ARRAY_BIGUINT64: i32 = 27;
+
+/// Opaque handle to a runtime. **Identity only**: never dereference it; compare
+/// or key on the pointer itself via [`ZqRuntime::id`](crate::ZqRuntime::id). The
+/// same handle is returned by `get_runtime` and passed to a module's
+/// runtime-finalize hook.
+pub struct ZqRuntime([u8; 0]);
 
 pub struct ZqRawCtxS([u8; 0]);
 
@@ -202,6 +208,14 @@ pub type ZqGcTraceFn = unsafe extern "C" fn(gcx: *mut ZqGcTraceCtxS, target: *mu
 pub type ZqJobRunFn = unsafe extern "C" fn(data: *mut c_void, env: ZqRawCtx) -> i32;
 /// Optional GC trace for JS values held inside `data`.
 pub type ZqJobTraceFn = unsafe extern "C" fn(data: *mut c_void, gcx: *mut ZqGcTraceCtxS);
+/// Generic disposer for an extension-owned opaque pointer.
+///
+/// Every host API that takes ownership of extension data requires one of these,
+/// so ownership is always explicit and the host is the single place that frees:
+/// it calls `drop_fn(data)` exactly once when the owning object is discarded
+/// (job leaves the queue, async iterator closed). Callers that pass a borrowed
+/// or `'static` pointer must supply a no-op. Must not panic across the ABI.
+pub type ZqDropFn = unsafe extern "C" fn(data: *mut c_void);
 
 // ── async iterator fetch callback ──
 /// FFI callback for `new_async_iterator`. Called on the JS thread to produce
@@ -556,6 +570,15 @@ pub struct ZqModuleInfo {
     /// dlopen-filename pattern). Older hosts leave this null. Appended at the
     /// end to keep the `#[repr(C)]` layout stable for older extensions.
     pub path: *const c_char,
+
+    /// Runtime-finalize hook: called once per runtime that imported this module,
+    /// when that runtime is torn down (after the GC heap is gone, so no trace
+    /// callback runs again). `rt` is the runtime identity handle (see
+    /// [`ZqRuntime`]). Use it to release runtime-scoped native state —
+    /// thread_locals, boxed GC-trace opaques. Must **not** call any JS API.
+    /// `None` = no runtime-scoped state. Appended at the end to keep the layout
+    /// stable for older extensions.
+    pub runtime_finalize: Option<unsafe extern "C" fn(rt: *mut ZqRuntime)>,
 }
 
 impl ZqModuleInfo {
@@ -622,6 +645,15 @@ pub struct ZqApi {
     // exposed: returning them to JS would corrupt the trampoline.
     pub const_values: [ZqRawValue; ZQ_CONST_VALUE_SLOT_COUNT],
 
+    // ── runtime identity ──
+    /// Identity handle of the runtime this context belongs to. Host-specific.
+    ///
+    /// The returned pointer is the **same** handle the host passes to a
+    /// module's runtime-finalize hook (`ZqModuleInfo::runtime_finalize`): use it
+    /// as a stable key for extension-owned per-runtime state (thread_locals).
+    /// Identity only — must not be dereferenced.
+    pub get_runtime: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqRuntime,
+
     // ── GC ──
     /// Mark `val` as reachable during a GC trace.
     /// Host-specific (garbage collection). Returns 0 on success, <0 on error.
@@ -632,17 +664,23 @@ pub struct ZqApi {
     pub gc_set_trace_func:
         unsafe extern "C" fn(env: ZqRawCtx, cb: Option<ZqGcTraceFn>, opaque: *mut c_void) -> i32,
 
-    // ── job queue (cross-thread async bridge) ──
-    /// Queue a host job on this context's event loop: `run_fn(data, env)` runs
+    // ── job queue ──
+    /// Queue a host job on this context's event loop: `run_fn(opaque, env)` runs
     /// once per tick until it's Done/Blocked/Continue.
     ///
     /// Host-specific; the JS-visible concept is a Job (§9.5).
+    ///
+    /// The host owns `opaque` and calls `drop_fn(opaque)` exactly once when the job
+    /// leaves the queue — whether it ran to completion or was discarded (queue
+    /// torn down at runtime teardown, error, interrupt). After `drop_fn` fires,
+    /// neither `run_fn` nor `trace_fn` is called for that `opaque` again.
     /// Returns 0 on success, <0 on error.
     pub add_job: unsafe extern "C" fn(
         env: ZqRawCtx,
         run_fn: ZqJobRunFn,
         trace_fn: Option<ZqJobTraceFn>,
-        data: *mut c_void,
+        drop_fn: ZqDropFn,
+        opaque: *mut c_void,
     ) -> i32,
 
     // ── event-loop wake (cross-thread) ──
@@ -1103,12 +1141,16 @@ pub struct ZqApi {
     ///
     /// ECMA-262: the Async Iterable Interface (§27.1.1.3) /
     /// %AsyncIteratorPrototype% (§27.1.4).
+    ///
+    /// The host owns `opaque` and calls `drop_fn(opaque)` exactly once when the
+    /// iterator is closed/dropped. After that, `fetch_fn`/`trace_fn` are not
+    /// called for it again.
     /// Returns the iterator object, or the exception sentinel on error.
     pub new_async_iterator: unsafe extern "C" fn(
         env: ZqRawCtx,
         fetch_fn: ZqAsyncIterFetchFn,
         trace_fn: Option<ZqGcTraceFn>,
-        drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+        drop_fn: ZqDropFn,
         opaque: *mut c_void,
     ) -> ZqRawValue,
 

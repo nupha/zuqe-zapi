@@ -33,7 +33,7 @@ impl<'cx> ZqCtx<'cx> {
                 self.raw,
                 async_iter_next_trampoline::<T>,
                 None,
-                Some(drop_boxed::<T>),
+                drop_boxed::<T>,
                 opaque,
             )
         };

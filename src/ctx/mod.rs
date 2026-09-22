@@ -14,7 +14,7 @@ pub use {
 use std::marker::PhantomData;
 
 use crate::{
-    ZqError, ZqRawCtx, ZqValue,
+    ZqError, ZqRawCtx, ZqRuntime, ZqValue,
     class::Class,
     ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqRawValue},
 };
@@ -62,6 +62,18 @@ impl<'cx> ZqCtx<'cx> {
             api.wake,
             api.drop_waker,
         )
+    }
+
+    /// Identity of the runtime this context belongs to — the same handle passed
+    /// to a module's runtime-finalize hook (`#[zq_module(finalize = ...)]`).
+    ///
+    /// Use [`ZqRuntime::id`] as a stable key for extension-owned per-runtime
+    /// state (e.g. a thread_local map): create the entry in the module `init`
+    /// hook and remove it in the `finalize` hook. Valid only inside a body /
+    /// init / finalize callback.
+    pub fn runtime(&self) -> &ZqRuntime {
+        let api = ZqApi::singleton();
+        unsafe { &*(api.get_runtime)(self.raw) }
     }
 
     /// `val instanceof class` for a native class (honours `Symbol.hasInstance`).
