@@ -718,6 +718,13 @@ pub struct ZqApi {
     /// `obj` is not one. Host-specific.
     pub get_object_payload: unsafe extern "C" fn(obj: ZqRawValue) -> *mut c_void,
 
+    /// Detach and return the native payload pointer of a host-class instance,
+    /// setting the instance's payload to null. Ownership transfers to the
+    /// caller: the engine will no longer free or trace the returned pointer.
+    /// Returns null when `obj` is not a host-class instance or its payload is
+    /// already null. Host-specific.
+    pub take_object_payload: unsafe extern "C" fn(obj: ZqRawValue) -> *mut c_void,
+
     /// `instanceof` against a native class registered via `register_class`.
     /// Host-specific fast path (resolves the class's constructor directly).
     /// Returns 1/0, or -1 on error.
