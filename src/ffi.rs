@@ -16,6 +16,11 @@ pub const ZQ_API_VERSION: u16 = 1;
 /// Pack ABI and API versions into a single u32: high 16 bits = ABI, low 16 bits = API.
 pub const ZQ_VERSION_PACKED: u32 = ((ZQ_ABI_VERSION as u32) << 16) | (ZQ_API_VERSION as u32);
 
+/// The minium allowed abi
+pub const ZQ_ABI_BASE: u16 = 2;
+/// The minium allowed api
+pub const ZQ_API_BASE: u16 = 1;
+
 /// `ZqFieldDef.kind` — a method (`FieldDef::FUNC`).
 pub const ZQ_FIELD_FUNC: u8 = 0;
 /// `ZqFieldDef.kind` — an accessor (getter/setter, `FieldDef::GETSET`).
