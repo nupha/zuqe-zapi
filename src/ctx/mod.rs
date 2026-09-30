@@ -57,7 +57,7 @@ impl<'cx> ZqCtx<'cx> {
     /// thread or task produces the async result.
     pub fn wake_handle(&self) -> ZqWakeHandle {
         let api = ZqApi::singleton();
-        ZqWakeHandle::from_parts(
+        ZqWakeHandle::from_raw_parts(
             unsafe { (api.new_waker)(self.raw) },
             api.wake,
             api.drop_waker,

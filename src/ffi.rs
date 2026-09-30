@@ -684,14 +684,28 @@ pub struct ZqApi {
     ) -> i32,
 
     // ── event-loop wake (cross-thread) ──
+    //
+    // Contract — the safe layer (`ZqWakeHandle`) turns this into a
+    // *compile-time* property, so a host only has to honour it:
+    //   * `new_waker` mints exactly one token; the caller owns it;
+    //   * `wake` may be called any number of times, from any thread, on a loop
+    //     that is running, parked, or already gone (a cheap no-op);
+    //   * `drop_waker` releases the token and must be called **exactly once**
+    //     per mint — the token is *not* refcounted at the ABI level.
+    //
+    // Sharing a wake capability is therefore a Rust-side concern, and it has
+    // exactly two spellings: `Arc<ZqWakeHandle>`, or (preferably, for
+    // "N producers → one loop") cloning a `ZqWakeSender`, which keeps one
+    // `Arc` internally. Never hand the same pointer to two owners.
     /// Create an opaque waker bound to this context's event loop.
-    /// Host-specific (event loop).
+    /// Host-specific (event loop). See the contract note above.
     pub new_waker: unsafe extern "C" fn(env: ZqRawCtx) -> *mut ZqWakeHandleS,
 
-    /// Wake the parked JS event loop. Safe from any thread. Host-specific.
+    /// Wake the parked JS event loop. Safe from any thread; may be called any
+    /// number of times. Host-specific.
     pub wake: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
 
-    /// Release a waker. Host-specific.
+    /// Release a waker: exactly once per `new_waker`. Host-specific.
     pub drop_waker: unsafe extern "C" fn(h: *mut ZqWakeHandleS),
 
     // ── native class ──
