@@ -386,7 +386,17 @@ impl<'cx> ZqValue<'cx> {
         if v.is_nullish() {
             Ok(None)
         } else {
-            v.to_utf8_string(ctx).map(Some)
+            v.string_read_utf8(ctx).map(Some)
+        }
+    }
+
+    /// Like [`get_string`](Self::get_string) with a UTF-8 key.
+    pub fn get_string_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<Option<String>, ZqError> {
+        let v = self.get_str(ctx, key)?;
+        if v.is_nullish() {
+            Ok(None)
+        } else {
+            v.string_read_utf8(ctx).map(Some)
         }
     }
 
@@ -404,6 +414,16 @@ impl<'cx> ZqValue<'cx> {
         }
     }
 
+    /// Like [`get_f64`](Self::get_f64) with a UTF-8 key.
+    pub fn get_f64_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<Option<f64>, ZqError> {
+        let v = self.get_str(ctx, key)?;
+        if v.is_nullish() {
+            Ok(None)
+        } else {
+            v.to_f64(ctx).map(Some)
+        }
+    }
+
     /// Get `self[key]` as a `bool`; `None` when absent or nullish.
     pub fn get_bool(
         &self,
@@ -411,6 +431,16 @@ impl<'cx> ZqValue<'cx> {
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<bool>, ZqError> {
         let v = self.get(ctx, key)?;
+        if v.is_nullish() {
+            Ok(None)
+        } else {
+            v.to_bool(ctx).map(Some)
+        }
+    }
+
+    /// Like [`get_bool`](Self::get_bool) with a UTF-8 key.
+    pub fn get_bool_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<Option<bool>, ZqError> {
+        let v = self.get_str(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else {
@@ -435,6 +465,23 @@ impl<'cx> ZqValue<'cx> {
         }
     }
 
+    /// Like [`get_object`](Self::get_object) with a UTF-8 key (no intermediate
+    /// JS string).
+    pub fn get_object_str(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: &str,
+    ) -> Result<Option<ZqValue<'cx>>, ZqError> {
+        let v = self.get_str(ctx, key)?;
+        if v.is_nullish() {
+            Ok(None)
+        } else if v.kind() == ZqValueType::Object {
+            Ok(Some(v))
+        } else {
+            Err(ctx.throw_type("property is not an object"))
+        }
+    }
+
     /// Get `self[key]` as an Array; `None` when absent/nullish, error when the
     /// property is not an array.
     pub fn get_array(
@@ -449,6 +496,50 @@ impl<'cx> ZqValue<'cx> {
             Ok(Some(v))
         } else {
             Err(ctx.throw_type("property is not an array"))
+        }
+    }
+
+    /// Like [`get_array`](Self::get_array) with a UTF-8 key.
+    pub fn get_array_str(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: &str,
+    ) -> Result<Option<ZqValue<'cx>>, ZqError> {
+        let v = self.get_str(ctx, key)?;
+        if v.is_nullish() {
+            Ok(None)
+        } else if v.is_array(ctx)? {
+            Ok(Some(v))
+        } else {
+            Err(ctx.throw_type("property is not an array"))
+        }
+    }
+
+    /// `Some(self)` when this value is an object (not a callable), else `None`.
+    /// Cheaper than `get_object(ctx, key)` for an already-obtained value.
+    pub fn as_object(&self) -> Option<ZqValue<'cx>> {
+        if self.kind() == ZqValueType::Object {
+            Some(*self)
+        } else {
+            None
+        }
+    }
+
+    /// `Some(self)` when this value is an Array, else `None`.
+    pub fn as_array(&self, ctx: ZqCtx<'cx>) -> Result<Option<ZqValue<'cx>>, ZqError> {
+        if self.is_array(ctx)? {
+            Ok(Some(*self))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// `Some(self)` when this value is a callable, else `None`.
+    pub fn as_function(&self) -> Option<ZqValue<'cx>> {
+        if self.is_callable() {
+            Some(*self)
+        } else {
+            None
         }
     }
 

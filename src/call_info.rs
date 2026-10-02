@@ -13,6 +13,7 @@ pub struct ZqCallInfo<'cx> {
 }
 
 impl<'cx> ZqCallInfo<'cx> {
+    #[inline(always)]
     pub fn new(raw: *mut ZqCallInfoS) -> Self {
         Self {
             raw,
@@ -20,16 +21,26 @@ impl<'cx> ZqCallInfo<'cx> {
         }
     }
 
+    /// Number of arguments passed to this call.
+    #[inline(always)]
     pub fn len(&self) -> usize {
         unsafe { (*self.raw).argc }
     }
 
+    /// Whether the call received no arguments.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// The registration magic (see `#[zq_function(magic = N)]` /
     /// `#[zq_method(magic = N)]`), for dispatching one body to several JS names.
+    #[inline(always)]
     pub fn magic(&self) -> i32 {
         unsafe { (*self.raw).magic }
     }
 
+    #[inline(always)]
     pub fn this(&self) -> ZqValue<'cx> {
         unsafe { ZqValue::from((*self.raw).this) }
     }
@@ -58,8 +69,14 @@ impl<'cx> ZqCallInfo<'cx> {
     }
 
     /// `arg(nth)` as a Rust `String` (must already be a JS string).
+    ///
+    /// Strict: a non-string argument yields `Err` **and leaves the host's
+    /// `TypeError` pending** (see [`ZqValue::string_read_utf8`]). For argument
+    /// parsing that should coerce (`String(x)`) or tolerate a non-string, use
+    /// [`ZqValue::coerce_string`] / [`ZqValue::try_string_read_utf8`] on `arg(nth)`
+    /// instead.
     pub fn arg_string(&self, ctx: ZqCtx<'cx>, nth: usize) -> Result<String, ZqError> {
-        self.arg(nth).to_utf8_string(ctx)
+        self.arg(nth).string_read_utf8(ctx)
     }
 
     /// Iterate over the arguments.

@@ -120,6 +120,46 @@ impl<'cx> ZqCtx<'cx> {
         )
     }
 
+    /// Like [`spawn_promise_async`](Self::spawn_promise_async), but the work is
+    /// an async `Result<T, E>` and a failed result rejects the Promise with
+    /// `E`'s `Display` rendering.
+    ///
+    /// This is the type-safe spelling for the common async-IO shape. Pinning
+    /// `E` here avoids the inference collapse that plagues a bare
+    /// `Future<Output = Result<T, E>>` handed to `spawn_promise_async` (where
+    /// `E` never appears in `convert`, so the compiler cannot deduce it).
+    ///
+    /// Rejection prefers a JS exception set by `convert` (via `cx.throw_*`);
+    /// otherwise it uses `E`. A dropped worker rejects with an internal error.
+    pub fn spawn_promise_async_result<T, E, F, S, C>(
+        &self,
+        fut: F,
+        spawn_fn: S,
+        convert_fn: C,
+    ) -> Result<ZqValue<'cx>, ZqError>
+    where
+        T: Send + 'static,
+        E: std::fmt::Display + Send + 'static,
+        F: Future<Output = Result<T, E>> + Send + 'static,
+        S: FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>),
+        C: for<'a> FnOnce(ZqCtx<'a>, T) -> Result<ZqValue<'a>, ZqError> + 'static,
+    {
+        self.spawn_promise_inner(
+            move |tx| {
+                spawn_fn(Box::pin(async move {
+                    let t = fut.await;
+                    // Convert the error to a String before crossing back so the
+                    // job only ever carries `Result<T, String>`.
+                    let _ = tx.send(t.map_err(|e| e.to_string()));
+                }));
+            },
+            move |cx, r: Result<T, String>| match r {
+                Ok(v) => convert_fn(cx, v),
+                Err(e) => Err(cx.throw_internal(&e)),
+            },
+        )
+    }
+
     /// Shared plumbing for both `spawn_promise` and `spawn_promise_async`:
     /// create the capability + wake channel, hand the sender to `launch` (which
     /// starts the work), and register the polling job that settles the Promise.

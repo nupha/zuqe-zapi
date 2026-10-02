@@ -11,6 +11,15 @@ pub struct Class<'cx, T: 'cx> {
 }
 
 impl<'cx, T> Class<'cx, T> {
+    /// Wrap a raw `ZqClassDef` pointer.
+    ///
+    /// # Safety
+    ///
+    /// `def` must point to a `ZqClassDef` that stays valid for the lifetime of
+    /// the returned `Class` (in practice a `'static` class definition registered
+    /// by `#[zq_class]`). The pointer is never dereferenced here; callers pass it
+    /// back to the host, which assumes it refers to the class `T` denotes.
+    #[inline(always)]
     pub unsafe fn from_def(def: *const ZqClassDef) -> Self {
         Self {
             def,
@@ -18,12 +27,14 @@ impl<'cx, T> Class<'cx, T> {
         }
     }
 
+    #[inline(always)]
     pub fn def(&self) -> *const ZqClassDef {
         self.def
     }
 }
 
 impl<'cx, T> Clone for Class<'cx, T> {
+    #[inline(always)]
     fn clone(&self) -> Self {
         *self
     }

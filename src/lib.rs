@@ -9,6 +9,8 @@ pub mod error;
 pub mod ffi;
 pub mod gc;
 pub mod iter;
+#[cfg(feature = "serde_json_support")]
+pub mod json;
 pub mod value;
 
 // Internal module for proc-macro generated code.
@@ -18,7 +20,7 @@ pub mod __private;
 pub use {
     __private::module_path,
     call_info::ZqCallInfo,
-    channel::ZqWakeSender,
+    channel::{ZqChannelPoll, ZqWakeSender},
     class::Class,
     ctx::{ZqCtx, ZqJob, ZqPoll, ZqPromiseCapability, ZqWakeHandle},
     error::{ZqError, ZqErrorType},

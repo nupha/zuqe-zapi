@@ -239,7 +239,7 @@ impl<'cx> ZqCtx<'cx> {
         if r.is_undefined() {
             Ok(None)
         } else {
-            r.to_utf8_string(*self).map(Some)
+            r.string_read_utf8(*self).map(Some)
         }
     }
 }

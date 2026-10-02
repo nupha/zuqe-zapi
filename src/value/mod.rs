@@ -215,6 +215,31 @@ impl<'cx> ZqValue<'cx> {
             Ok(Self::from(raw))
         }
     }
+
+    /// Create a callable backed by a native body function.
+    ///
+    /// `body` is a raw zapi body (`unsafe extern "C" fn(env, cc) -> raw`); the
+    /// `#[zq_function]` / `#[zq_class]` macros expose one via `trampoline()`.
+    /// Use this to install a named native function as a property value (e.g. a
+    /// method on an event object) — for a module export, list the item in
+    /// `#[zq_module(exports = [...])]` instead.
+    ///
+    /// `magic` is readable in the body via `ZqCallInfo::magic`.
+    pub fn new_function(
+        ctx: ZqCtx<'cx>,
+        body: crate::ffi::ZqBodyFn,
+        name: &str,
+        magic: i32,
+    ) -> Result<Self, ZqError> {
+        let api = ZqApi::singleton();
+        let name_val = Self::new_string(ctx, name)?;
+        let raw = unsafe { (api.new_builtin_function)(ctx.raw, body, name_val.raw(), magic) };
+        if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
+            Err(ZqError)
+        } else {
+            Ok(Self::from(raw))
+        }
+    }
 }
 
 impl<'cx> ZqValue<'cx> {
@@ -258,9 +283,10 @@ impl<'cx> ZqValue<'cx> {
             } else {
                 api.const_values[ZQ_CONST_VALUE_SLOT_MINUS_INFINITY]
             }
-        } else if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-            unsafe { (api.new_number)(n) }
         } else {
+            // Integers and non-integers alike go through `new_number`; the
+            // engine picks the internal representation. (A separate
+            // int-valued branch would have an identical body, hence no split.)
             unsafe { (api.new_number)(n) }
         };
 
@@ -375,7 +401,7 @@ impl<'cx> ZqValue<'cx> {
     }
 
     /// Coerce to a JS string value.
-    pub fn to_js_string(self, ctx: ZqCtx) -> Result<Self, ZqError> {
+    pub fn to_jsstring(self, ctx: ZqCtx) -> Result<Self, ZqError> {
         let api = ZqApi::singleton();
         let sval = unsafe { (api.to_string)(ctx.raw, self.raw) };
         if sval == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -385,12 +411,45 @@ impl<'cx> ZqValue<'cx> {
         }
     }
 
-    /// Read string content as UTF-8 into a Rust `String`.
+    #[deprecated(note = "use `::to_jsstring` instead")]
+    pub fn to_js_string(self, ctx: ZqCtx) -> Result<Self, ZqError> {
+        self.to_jsstring(ctx)
+    }
+
+    /// Get Symbol's description and encode to utf8
+    pub fn symbol_description(&self, ctx: ZqCtx) -> Result<String, ZqError> {
+        // Symbol.prototype.description getter (ECMA-262 §20.4.3.2).
+        self.get_str(ctx, "description")?.string_read_utf8(ctx)
+    }
+
+    /// Strictly read this value's string content as UTF-8 into a Rust `String`.
     ///
-    /// Uses the engine's measure-then-copy `read_string_utf8`; no buffer
-    /// ownership crosses the ABI, so it is safe regardless of the host's
-    /// global allocator (e.g. mimalloc in the `aike` binary).
-    pub fn to_utf8_string(&self, ctx: ZqCtx<'cx>) -> Result<String, ZqError> {
+    /// **Strict read, not a conversion.** `self` must *already be* a JS string;
+    /// every other value (number, boolean, object, `undefined`, ...) is a type
+    /// error — see the exception contract below.
+    ///
+    /// ## Error / side-effect contract (important)
+    ///
+    /// On `Err`, the host has already **raised a `TypeError` and left it
+    /// pending** in this context. This method does *not* clear it. If the caller
+    /// swallows the error (e.g. `if let Ok(s) = v.string_read_utf8(cx)` or
+    /// `.unwrap_or_default()`), that pending exception stays set, and the next
+    /// native call that returns `Ok` will trip the host's
+    /// “call returned Ok but left an exception set” assertion.
+    ///
+    /// So a caller that intentionally tolerates a non-string must either
+    /// [`take_exception`](ZqCtx::take_exception) itself, or use
+    /// [`try_string_read_utf8`](Self::try_string_read_utf8) (clears it) /
+    /// [`coerce_string`](Self::coerce_string) (converts first).
+    ///
+    /// Use this when the value is *known* to be a string and a mismatch should
+    /// surface as a thrown error. To coerce or to probe, prefer the helpers
+    /// above.
+    ///
+    /// Implementation note: uses the engine's measure-then-copy
+    /// `read_string_utf8`; no buffer ownership crosses the ABI, so it is safe
+    /// regardless of the host's global allocator (e.g. mimalloc in `aike`).
+    pub fn string_read_utf8(&self, ctx: ZqCtx<'cx>) -> Result<String, ZqError> {
         let api = ZqApi::singleton();
         // A null buf is measure mode: returns the byte count, or -1 if `self`
         // is not a string (and sets an exception).
@@ -423,9 +482,36 @@ impl<'cx> ZqValue<'cx> {
             .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
     }
 
-    /// Get Symbol's description and encode to utf8
-    pub fn symbol_description(&self, ctx: ZqCtx) -> Result<String, ZqError> {
-        // Symbol.prototype.description getter (ECMA-262 §20.4.3.2).
-        self.get_str(ctx, "description")?.to_utf8_string(ctx)
+    /// Non-throwing version of [`string_read_utf8`](Self::string_read_utf8)
+    pub fn try_string_read_utf8(&self, ctx: ZqCtx<'cx>) -> Option<String> {
+        match self.string_read_utf8(ctx) {
+            Ok(s) => Some(s),
+            Err(_) => {
+                let _ = ctx.take_exception();
+                None
+            }
+        }
+    }
+
+    #[deprecated(note = "use `::string_read_utf8` instead")]
+    pub fn to_utf8_string(&self, ctx: ZqCtx<'cx>) -> Result<String, ZqError> {
+        self.string_read_utf8(ctx)
+    }
+
+    /// Coerce `self` value to a Rust `String` using JS `ToString` semantics, then
+    /// read it out.
+    ///
+    /// This is a **conversion**, not a strict read: numbers, booleans, `null`
+    /// and objects are stringified the way `String(x)` would
+    /// (`42` → `"42"`, `null` → `"null"`, `{a:1}` → `"[object Object]"`). Use it
+    /// to parse call arguments, mirroring the engine's `to_string`.
+    ///
+    /// Contrast with [`string_read_utf8`](Self::string_read_utf8), which is strict
+    /// and **leaves a pending `TypeError`** on a non-string. Here the value is
+    /// converted to a real string *first*, so on the success path there is never
+    /// a pending exception. (`Err` only remains possible when `ToString` itself
+    /// throws — e.g. a `Symbol` — and the usual `?` propagation applies.)
+    pub fn coerce_string(&self, ctx: ZqCtx<'cx>) -> Result<String, ZqError> {
+        self.to_jsstring(ctx).and_then(|s| s.string_read_utf8(ctx))
     }
 }

@@ -126,6 +126,76 @@ impl<'cx> ZqCtx<'cx> {
         let (tx, rx) = mpsc::channel();
         (ZqWakeSender::new(tx, self.wake_handle()), rx)
     }
+
+    /// Sugar over [`make_wake_channel`](Self::make_wake_channel) +
+    /// [`add_job`](crate::ZqCtx::add_job): install a persistent polling job that
+    /// drains the channel into `handler`, and return the sender to hand to
+    /// producers.
+    ///
+    /// `handler` returns [`ZqChannelPoll::Continue`] to keep the job registered
+    /// (it re-blocks until woken) or [`ZqChannelPoll::Done`] to release it. The
+    /// job also terminates when the channel disconnects (all senders dropped).
+    /// A JS exception left by `handler` is cleared automatically, mirroring an
+    /// event callback that cannot propagate a throw.
+    ///
+    /// This is the standard "native event stream → JS callback" shape; it has
+    /// long-term value and is the recommended spelling over the raw pieces.
+    pub fn spawn_channel_job<T, H>(&self, label: &'static str, handler: H) -> ZqWakeSender<T>
+    where
+        T: 'static,
+        H: FnMut(ZqCtx<'_>, T) -> ZqChannelPoll + 'static,
+    {
+        let (tx, rx) = self.make_wake_channel::<T>();
+
+        struct ChannelJob<T, H> {
+            label: &'static str,
+            rx: mpsc::Receiver<T>,
+            handler: H,
+        }
+
+        impl<T, H> crate::gc::ZqGcTrace for ChannelJob<T, H> {
+            // Payload holds no GC-managed JS values; callbacks live wherever the
+            // extension traces them.
+            fn trace(&self, _: &mut crate::gc::ZqGcTraceCtx) {}
+        }
+
+        impl<T, H> crate::ctx::ZqJob for ChannelJob<T, H>
+        where
+            T: 'static,
+            H: FnMut(ZqCtx<'_>, T) -> ZqChannelPoll + 'static,
+        {
+            fn run(&mut self, cx: ZqCtx<'_>) -> crate::ctx::ZqPoll {
+                match self.rx.try_recv() {
+                    Ok(msg) => {
+                        let cont = (self.handler)(cx, msg) == ZqChannelPoll::Continue;
+                        if !cx.take_exception().is_undefined() {
+                            #[cfg(debug_assertions)]
+                            eprintln!("[channel job:{}] handler left exception", self.label);
+                        }
+                        if cont {
+                            crate::ctx::ZqPoll::Again
+                        } else {
+                            crate::ctx::ZqPoll::Done
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => crate::ctx::ZqPoll::Again,
+                    Err(mpsc::TryRecvError::Disconnected) => crate::ctx::ZqPoll::Done,
+                }
+            }
+        }
+
+        self.add_job(ChannelJob { label, rx, handler });
+        tx
+    }
+}
+
+/// Control returned by a [`ZqCtx::spawn_channel_job`] handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZqChannelPoll {
+    /// Keep the polling job registered (it re-blocks until woken).
+    Continue,
+    /// Release the polling job.
+    Done,
 }
 
 /// Compile-time assertions on the sharing model.

@@ -96,8 +96,8 @@ const _: fn() = || {
     trait AmbiguousIfImpl<A> {
         fn some_item() {}
     }
-    impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+    impl<T> AmbiguousIfImpl<()> for T {}
     struct Invalid;
-    impl<T: ?Sized + Clone> AmbiguousIfImpl<Invalid> for T {}
+    impl<T: Clone> AmbiguousIfImpl<Invalid> for T {}
     let _ = <ZqWakeHandle as AmbiguousIfImpl<_>>::some_item;
 };
