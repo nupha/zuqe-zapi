@@ -3,11 +3,13 @@
 
 mod job;
 mod promise;
+mod state;
 mod wake;
 
 pub use {
     job::{ZqJob, ZqPoll},
-    promise::ZqPromiseCapability,
+    promise::{ZqExecutor, ZqPromiseCapability},
+    state::ZqRuntimeState,
     wake::ZqWakeHandle,
 };
 
@@ -241,5 +243,61 @@ impl<'cx> ZqCtx<'cx> {
         } else {
             r.string_read_utf8(*self).map(Some)
         }
+    }
+
+    /// Call a JS callback whose throw cannot propagate — an event listener, a
+    /// promise reaction, a native emitter subscriber.
+    ///
+    /// Always leaves **no** exception on the context: on failure it takes the
+    /// pending exception and reports it (debug builds print it), so a throwing
+    /// listener degrades to a diagnostic instead of aborting the tick.
+    ///
+    /// Returns whether the callback threw. A non-callable `cb` is reported the
+    /// same way, so registering a non-function is loud rather than silent.
+    pub fn call_event_handler(
+        &self,
+        cb: impl Into<ZqValue<'cx>>,
+        this: impl Into<ZqValue<'cx>>,
+        args: &[ZqValue<'cx>],
+        label: &str,
+    ) -> bool {
+        let cb = cb.into();
+        if !cb.is_callable() {
+            self.report_cleared_exception(label, "callback is not a function");
+            return true;
+        }
+        match self.call_function(cb, this, args) {
+            Ok(_) => false,
+            Err(_) => {
+                let exc = self.take_exception();
+                #[cfg(debug_assertions)]
+                self.print_cleared_exception(label, exc);
+                #[cfg(not(debug_assertions))]
+                let _ = exc;
+                true
+            }
+        }
+    }
+
+    /// Report a taken exception under debug builds instead of silently dropping
+    /// it. Event callbacks cannot propagate a throw, so this is the only
+    /// available diagnostic.
+    #[cfg(debug_assertions)]
+    fn print_cleared_exception(&self, label: &str, exc: ZqValue<'_>) {
+        if exc.is_undefined() {
+            return;
+        }
+        let msg = exc
+            .get_str(*self, "message")
+            .ok()
+            .and_then(|v| v.string_read_utf8(*self).ok())
+            .unwrap_or_else(|| "<unprintable exception>".to_string());
+        eprintln!("[zapi:{label}] cleared {msg}");
+    }
+
+    /// Report a problem that is not a pending exception (e.g. a non-callable
+    /// callback). Always visible: it means the extension is wired wrong.
+    fn report_cleared_exception(&self, label: &str, msg: &str) {
+        eprintln!("[zapi:{label}] {msg}");
     }
 }

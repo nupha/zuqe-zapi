@@ -12,7 +12,7 @@ impl<'cx> ZqCtx<'cx> {
     /// Register a job on the event loop: `job.run` runs once per event-loop
     /// tick until it returns [`ZqPoll::Done`]. Return [`ZqPoll::Again`] to
     /// stay registered (the loop parks until woken — pair with
-    /// `make_wake_channel` / `spawn_promise` so the wake actually arrives).
+    /// `make_wake_channel` / `promise_fut*` so the wake actually arrives).
     /// Return [`ZqPoll::AgainNoHold`] for fire-and-forget jobs that must not
     /// keep the process alive.
     ///

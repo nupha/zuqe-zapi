@@ -8,6 +8,22 @@ use crate::{
 
 use super::{ZqPropertyDescriptor, ZqValue, ZqValueType};
 
+/// Turn a strict property read into an "absent or unusable" answer, dropping the
+/// exception the read left behind.
+///
+/// Every `get_*` accessor reports a throwing getter (or a wrong-typed value) as
+/// `Err` **with the JS exception still pending**. A caller that treats that as
+/// "not provided" must clear it, or the host's end-of-tick assertion fires.
+fn clear_on_err<T>(cx: ZqCtx<'_>, r: Result<Option<T>, ZqError>) -> Option<T> {
+    match r {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = cx.take_exception();
+            None
+        }
+    }
+}
+
 impl<'cx> ZqValue<'cx> {
     /// Get a property (works for objects, arrays, typed arrays, ...).
     pub fn get(
@@ -512,6 +528,101 @@ impl<'cx> ZqValue<'cx> {
             Ok(Some(v))
         } else {
             Err(ctx.throw_type("property is not an array"))
+        }
+    }
+
+    // ── exception-clearing variants for optional properties ──
+    //
+    // Reading an *optional* option must never leave an exception behind: a
+    // throwing getter, or a value of the wrong type, would otherwise survive
+    // the call and trip the host's "call returned Ok but left an exception set"
+    // assertion (debug builds abort). Each `try_get_*` swallows the failure
+    // *and clears it*, so a caller that means "absent or unusable" can write
+    // `opts.try_get_object_str(cx, "clip")` and move on.
+
+    /// [`get_string`](Self::get_string) that clears the exception on failure.
+    pub fn try_get_string(&self, ctx: ZqCtx<'cx>, key: impl Into<ZqValue<'cx>>) -> Option<String> {
+        clear_on_err(ctx, self.get_string(ctx, key))
+    }
+
+    /// [`get_string_str`](Self::get_string_str) that clears the exception on failure.
+    pub fn try_get_string_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Option<String> {
+        clear_on_err(ctx, self.get_string_str(ctx, key))
+    }
+
+    /// [`get_f64`](Self::get_f64) that clears the exception on failure.
+    pub fn try_get_f64(&self, ctx: ZqCtx<'cx>, key: impl Into<ZqValue<'cx>>) -> Option<f64> {
+        clear_on_err(ctx, self.get_f64(ctx, key))
+    }
+
+    /// [`get_f64_str`](Self::get_f64_str) that clears the exception on failure.
+    pub fn try_get_f64_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Option<f64> {
+        clear_on_err(ctx, self.get_f64_str(ctx, key))
+    }
+
+    /// [`get_bool`](Self::get_bool) that clears the exception on failure.
+    pub fn try_get_bool(&self, ctx: ZqCtx<'cx>, key: impl Into<ZqValue<'cx>>) -> Option<bool> {
+        clear_on_err(ctx, self.get_bool(ctx, key))
+    }
+
+    /// [`get_bool_str`](Self::get_bool_str) that clears the exception on failure.
+    pub fn try_get_bool_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Option<bool> {
+        clear_on_err(ctx, self.get_bool_str(ctx, key))
+    }
+
+    /// [`get_object`](Self::get_object) that clears the exception on failure.
+    pub fn try_get_object(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: impl Into<ZqValue<'cx>>,
+    ) -> Option<ZqValue<'cx>> {
+        clear_on_err(ctx, self.get_object(ctx, key))
+    }
+
+    /// [`get_object_str`](Self::get_object_str) that clears the exception on failure.
+    pub fn try_get_object_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Option<ZqValue<'cx>> {
+        clear_on_err(ctx, self.get_object_str(ctx, key))
+    }
+
+    /// [`get_array`](Self::get_array) that clears the exception on failure.
+    pub fn try_get_array(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: impl Into<ZqValue<'cx>>,
+    ) -> Option<ZqValue<'cx>> {
+        clear_on_err(ctx, self.get_array(ctx, key))
+    }
+
+    /// [`get_array_str`](Self::get_array_str) that clears the exception on failure.
+    pub fn try_get_array_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Option<ZqValue<'cx>> {
+        clear_on_err(ctx, self.get_array_str(ctx, key))
+    }
+
+    // ── constrained reads ──
+
+    /// Get an optional string property constrained to `allowed`, throwing a
+    /// `RangeError` naming the property, the rejected value and the whole set
+    /// when it is present but not a member.
+    ///
+    /// `None` for an absent or nullish property; use for protocol enums, where
+    /// forwarding an unknown value is a protocol error at best and, for some
+    /// commands, fatal.
+    pub fn get_enum(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: &str,
+        allowed: &[&str],
+    ) -> Result<Option<String>, ZqError> {
+        let Some(v) = self.get_string_str(ctx, key)? else {
+            return Ok(None);
+        };
+        if allowed.contains(&v.as_str()) {
+            Ok(Some(v))
+        } else {
+            Err(ctx.throw_range(&format!(
+                "`{key}` must be one of {}; got {v:?}",
+                allowed.join("|")
+            )))
         }
     }
 

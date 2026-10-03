@@ -134,13 +134,65 @@ impl<'cx> ZqCtx<'cx> {
     ///
     /// `handler` returns [`ZqChannelPoll::Continue`] to keep the job registered
     /// (it re-blocks until woken) or [`ZqChannelPoll::Done`] to release it. The
-    /// job also terminates when the channel disconnects (all senders dropped).
-    /// A JS exception left by `handler` is cleared automatically, mirroring an
+    /// job also terminates when the channel disconnects (all senders dropped). A
+    /// JS exception left by `handler` is cleared automatically, mirroring an
     /// event callback that cannot propagate a throw.
     ///
-    /// This is the standard "native event stream → JS callback" shape; it has
+    /// This job **holds the event loop** while it is registered: an empty
+    /// channel reports "parked", so the driver waits instead of finishing. That
+    /// is right for genuinely pending work. For a long-lived native event stream
+    /// use [`spawn_event_job`](Self::spawn_event_job), which does not.
+    ///
+    /// This is the standard "native work result → JS callback" shape; it has
     /// long-term value and is the recommended spelling over the raw pieces.
     pub fn spawn_channel_job<T, H>(&self, label: &'static str, handler: H) -> ZqWakeSender<T>
+    where
+        T: 'static,
+        H: FnMut(ZqCtx<'_>, T) -> ZqChannelPoll + 'static,
+    {
+        self.spawn_channel_job_inner(label, handler, Hold::Hold)
+    }
+
+    /// Like [`spawn_channel_job`](Self::spawn_channel_job), but for a **long-lived
+    /// native event stream**: `onLog`, `onConsole`, request interception,
+    /// certificate errors, and anything else fed by events rather than by a
+    /// request that will finish.
+    ///
+    /// Two differences, both required for such a stream:
+    ///
+    /// * The job does **not** hold the event loop. An empty channel reports
+    ///   "idle", so a program whose only pending work was a registered listener
+    ///   can terminate. Held, it would report "parked" forever and the process
+    ///   would never exit.
+    /// * Each tick drains the **whole** channel instead of one message. Wakes
+    ///   coalesce on the loop's self-pipe, so one wake can stand for many
+    ///   messages; a one-per-tick job would leave the rest queued until some
+    ///   unrelated event happened to fire.
+    ///
+    /// Events are still delivered while the program is alive: every send wakes
+    /// the loop, which drives the next round, and a pending promise or timer
+    /// keeps rounds coming.
+    pub fn spawn_event_job<T, H>(&self, label: &'static str, mut handler: H) -> ZqWakeSender<T>
+    where
+        T: 'static,
+        H: FnMut(ZqCtx<'_>, T) + 'static,
+    {
+        self.spawn_channel_job_inner(
+            label,
+            move |cx, msg| {
+                handler(cx, msg);
+                ZqChannelPoll::Continue
+            },
+            Hold::NoHold,
+        )
+    }
+
+    fn spawn_channel_job_inner<T, H>(
+        &self,
+        label: &'static str,
+        handler: H,
+        hold: Hold,
+    ) -> ZqWakeSender<T>
     where
         T: 'static,
         H: FnMut(ZqCtx<'_>, T) -> ZqChannelPoll + 'static,
@@ -151,6 +203,7 @@ impl<'cx> ZqCtx<'cx> {
             label: &'static str,
             rx: mpsc::Receiver<T>,
             handler: H,
+            hold: Hold,
         }
 
         impl<T, H> crate::gc::ZqGcTrace for ChannelJob<T, H> {
@@ -165,28 +218,52 @@ impl<'cx> ZqCtx<'cx> {
             H: FnMut(ZqCtx<'_>, T) -> ZqChannelPoll + 'static,
         {
             fn run(&mut self, cx: ZqCtx<'_>) -> crate::ctx::ZqPoll {
-                match self.rx.try_recv() {
-                    Ok(msg) => {
-                        let cont = (self.handler)(cx, msg) == ZqChannelPoll::Continue;
-                        if !cx.take_exception().is_undefined() {
-                            #[cfg(debug_assertions)]
-                            eprintln!("[channel job:{}] handler left exception", self.label);
+                // A non-holding stream drains everything the producer queued;
+                // a holding one keeps its historical one-message-per-tick shape.
+                let budget = match self.hold {
+                    Hold::Hold => 1,
+                    Hold::NoHold => usize::MAX,
+                };
+                for _ in 0..budget {
+                    match self.rx.try_recv() {
+                        Ok(msg) => {
+                            let cont = (self.handler)(cx, msg) == ZqChannelPoll::Continue;
+                            if !cx.take_exception().is_undefined() {
+                                #[cfg(debug_assertions)]
+                                eprintln!("[channel job:{}] handler left exception", self.label);
+                            }
+                            if !cont {
+                                return crate::ctx::ZqPoll::Done;
+                            }
                         }
-                        if cont {
-                            crate::ctx::ZqPoll::Again
-                        } else {
-                            crate::ctx::ZqPoll::Done
-                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return crate::ctx::ZqPoll::Done,
                     }
-                    Err(mpsc::TryRecvError::Empty) => crate::ctx::ZqPoll::Again,
-                    Err(mpsc::TryRecvError::Disconnected) => crate::ctx::ZqPoll::Done,
+                }
+                match self.hold {
+                    Hold::Hold => crate::ctx::ZqPoll::Again,
+                    Hold::NoHold => crate::ctx::ZqPoll::AgainNoHold,
                 }
             }
         }
 
-        self.add_job(ChannelJob { label, rx, handler });
+        self.add_job(ChannelJob {
+            label,
+            rx,
+            handler,
+            hold,
+        });
         tx
     }
+}
+
+/// Whether a channel job keeps the event loop alive while it is registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// Empty channel reports `Again` ("parked") — the driver waits.
+    Hold,
+    /// Empty channel reports `AgainNoHold` — the driver may finish.
+    NoHold,
 }
 
 /// Control returned by a [`ZqCtx::spawn_channel_job`] handler.

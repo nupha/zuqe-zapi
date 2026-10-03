@@ -79,6 +79,32 @@ impl<'cx> ZqCallInfo<'cx> {
         self.arg(nth).string_read_utf8(ctx)
     }
 
+    /// `arg(nth)` as a Rust `String`, constrained to `allowed`.
+    ///
+    /// `arg_name` is the parameter's public name, used in the error. A missing
+    /// argument is `undefined` and therefore not a member: pass an
+    /// `allowed` that contains `"undefined"` for an optional parameter.
+    ///
+    /// Forwards an unknown value as a `RangeError` rather than to the host,
+    /// which for many commands is a hard protocol error (or worse).
+    pub fn arg_enum(
+        &self,
+        ctx: ZqCtx<'cx>,
+        nth: usize,
+        allowed: &[&str],
+        arg_name: &str,
+    ) -> Result<String, ZqError> {
+        let v = self.arg(nth).string_read_utf8(ctx)?;
+        if allowed.contains(&v.as_str()) {
+            Ok(v)
+        } else {
+            Err(ctx.throw_range(&format!(
+                "`{arg_name}` must be one of {}; got {v:?}",
+                allowed.join("|")
+            )))
+        }
+    }
+
     /// Iterate over the arguments.
     pub fn args(&self) -> impl Iterator<Item = ZqValue<'cx>> + '_ {
         (0..self.len()).map(|i| self.arg(i))

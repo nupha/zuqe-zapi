@@ -22,7 +22,7 @@ pub use {
     call_info::ZqCallInfo,
     channel::{ZqChannelPoll, ZqWakeSender},
     class::Class,
-    ctx::{ZqCtx, ZqJob, ZqPoll, ZqPromiseCapability, ZqWakeHandle},
+    ctx::{ZqCtx, ZqExecutor, ZqJob, ZqPoll, ZqPromiseCapability, ZqRuntimeState, ZqWakeHandle},
     error::{ZqError, ZqErrorType},
     ffi::{ZqApi, ZqFieldDef, ZqRawCtx, ZqRawValue, ZqRuntime},
     gc::{ZqGcTrace, ZqGcTraceCtx},

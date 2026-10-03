@@ -183,13 +183,13 @@ pub struct ZqGcTraceCtxS([u8; 0]);
 
 pub type ZqBodyFn = unsafe extern "C" fn(env: ZqRawCtx, cc: *mut ZqCallInfoS) -> ZqRawValue;
 
-/// FFI form of the `spawn_promise` work closure: executes once on a spawned
+/// FFI form of the `promise_threaded` work closure: executes once on a spawned
 /// thread, returns a raw pointer to `Box<T>` (T is the extension-defined result
 /// type). `work_data` is consumed and freed by the work fn; it must not contain
 /// GC-managed JS values.
 pub type ZqWorkFn = unsafe extern "C" fn(work_data: *mut c_void) -> *mut c_void;
 
-/// FFI form of the `spawn_promise` convert closure: executes once on the JS
+/// FFI form of the promise `convert` closure: executes once on the JS
 /// thread, converts the work result `Box<T>` into a JS value (consuming and
 /// freeing the Box). On failure, throws an exception and returns
 /// `value_exception`.
