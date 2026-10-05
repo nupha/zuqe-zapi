@@ -1,4 +1,6 @@
 *
+
 !src/
 !src/**
-!.gitignore
+!skills/
+!skills/**/*.md
