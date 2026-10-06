@@ -6,8 +6,9 @@ description: How to write a zapi native extension library - build setup, the fiv
 # Writing a zapi extension
 
 A zapi extension is a `cdylib` the JS runtime loads and calls through a
-generated C ABI. You write ordinary Rust plus five attributes; they generate the
-glue, the export list, and the module entry point. You never write FFI code.
+generated C ABI. You write ordinary Rust plus a handful of attributes; they
+generate the glue, the export list, and the module entry point. You never write
+FFI code.
 
 This document is about writing extensions. It explains the framework only as far
 as you need it to make correct choices.
@@ -121,7 +122,7 @@ AIKE_LIB_PATH=$PWD/target/debug aike -m tests/t.mjs
 - `ReferenceError: module '...': zapi ABI/API version N mismatch` at import means
   your `zuqe-zapi` version does not match the host's.
 
-## 2. The five macros
+## 2. The attributes
 
 Every macro comes from the `zuqe_zapi_macros` crate and must be imported. The
 runtime types (`ZqCtx`, `ZqValue`, `ZqCallInfo`, `ZqError`, ...) come from
@@ -148,9 +149,9 @@ extensions hand-write `impl ZqGcTrace for ...` and never use the derive.
 | `#[zq_export(name = "js")]` | a value computed at module load | `fn f<'a>(ctx: ZqCtx<'a>) -> Result<ZqValue<'a>, ZqError>` |
 | `#[zq_class(name = "Cls", payload = T, payload_no_gc)]` | a JS class | on `struct Cls;` |
 | `#[zq_class_impl]` | the class body | on the inherent `impl Cls`; holds `fn constructor`, `#[zq_method]`, `#[zq_static_method]` |
-
-Also available: `#[derive(ZqGcTrace)]` (chapter 8), and on methods
-`#[zq_method(name, get, set, magic = N)]`.
+| `#[zq_method(name = "js", get, set, magic = N)]` | an instance method (on the prototype) | inside `#[zq_class_impl]`: `fn f<'a>(ctx: ZqCtx<'a>, cc: ZqCallInfo<'a>) -> Result<ZqValue<'a>, ZqError>` |
+| `#[zq_static_method(name = "js", get, set, magic = N)]` | a static method (on the constructor) | same shape as `#[zq_method]` |
+| `#[derive(ZqGcTrace)]` | mark every field of a payload struct | on `struct Payload` (chapter 8) |
 
 Rules:
 
@@ -401,8 +402,8 @@ Filling an object:
 
 ```rust
 let obj = ZqValue::new_object(ctx)?;
-obj.set_str(ctx, "size", ZqValue::number(meta.len() as f64))?;
-obj.set_str(ctx, "name", ZqValue::new_string(ctx, &p.path)?)?;
+obj.set_property_str(ctx, "size", ZqValue::number(meta.len() as f64))?;
+obj.set_property_str(ctx, "name", ZqValue::new_string(ctx, &p.path)?)?;
 Ok(obj)
 ```
 
@@ -581,7 +582,8 @@ ctx.new_async_iterator(Scan { .. })
 
 ### 4.7 Properties, accessors, and callbacks
 
-`get` / `set` make a method a property accessor, so it reads as a field:
+`#[zq_method(get)]` / `#[zq_method(set)]` make a method a property accessor, so it
+reads as a field:
 
 ```rust
 #[zq_method(get, name = "rootNode")]
@@ -607,8 +609,8 @@ Reading fields off an object JS handed you:
 | a bool field | `obj.get_bool_str(ctx, "k")? -> Option<bool>` |
 | a nested object | `obj.get_object_str(ctx, "k")? -> Option<ZqValue>` |
 | a nested array | `obj.get_array_str(ctx, "k")? -> Option<ZqValue>` |
-| required string | `obj.get_str(ctx, "k")?` (throws if absent) |
-| presence | `obj.has_str(ctx, "k")?` |
+| required string | `obj.get_property_str(ctx, "k")?` (throws if absent) |
+| presence | `obj.has_property_str(ctx, "k")?` |
 | call a method on it | `obj.invoke_str(ctx, "method", &[a, b])?` |
 | build an array | `ZqValue::new_array(ctx, &[a, b])?`, or `push` in a loop |
 
@@ -617,7 +619,7 @@ are building - the only way to put one there:
 
 ```rust
 let f = ZqValue::new_function(ctx, js_accept::trampoline(), "accept", magic)?;
-obj.set_str(ctx, "accept", f)?;
+obj.set_property_str(ctx, "accept", f)?;
 ```
 
 ### 4.8 Binary data
@@ -666,7 +668,8 @@ let timeout = if cc.arg(0).is_undefined() { 30 } else {
 ```
 
 Readers: `cc.arg(n)`, `arg_f64`, `arg_i32`, `arg_bool`, `arg_string`,
-`arg_enum(ctx, n, &["a", "b"], "mode")`, `cc.is_empty()`, `cc.this()`.
+`arg_enum(ctx, n, &["a", "b"], "mode")`, `cc.is_empty()`, `cc.len()`, `cc.this()`,
+`cc.args()`.
 
 Options objects: reject a non-object with a `TypeError`, then read each key and
 treat only `undefined` as absent.
@@ -856,25 +859,133 @@ confirm it does something:
 
 ## 10. API map
 
-| need | API |
+Grouped by the type that owns the method. Every name below is exact - if it is not
+in this table, it is not a `pub` method of `zuqe_zapi`.
+
+### 10.1 `ZqCtx` - the context handle
+
+| need | call |
 | --- | --- |
-| the context handle | `ZqCtx` |
 | globals | `get_global_str`, `set_global_str` |
-| calling into JS | `call_function`, `call_constructor`, `call_event_handler` |
-| reading arguments | `ZqCallInfo`: `this`, `len`, `is_empty`, `arg`, `arg_f64`, `arg_i32`, `arg_bool`, `arg_string`, `arg_enum`, `magic` |
-| inspecting a value | `ZqValue`: `kind`, `is_*`, `raw`, `to_f64`, `to_i32`, `to_i64`, `to_bool`, `to_jsstring` |
-| reading a string | `string_read_utf8`, `coerce_string`, `try_string_read_utf8`, `symbol_description` |
-| building a value | `new_string`, `new_object`, `new_object_with_proto`, `new_array`, `new_symbol`, `new_bigint_i64/u64`, `new_error`, `new_function`, `new_buf`, `typed_array`, `undefined`, `null`, `bool`, `int32`, `number`, `array_from_iter` |
-| object fields | `get*`, `set*`, `define*`, `define_accessor*`, `has*`, `delete*`, `own_property_*`, `get_index`, `set_index`, `push` |
-| calling a JS object | `invoke*`, `call*` |
-| errors | `throw_type/range/reference/syntax/uri/eval/internal/aggregate`, `throw`, `throw_value`, `exception`, `take_exception`, `ZqErrorType` |
-| async, one result | `promise_threaded*`, `promise_fut*`, `set_default_executor` |
-| async, a stream | `spawn_event_job`, `spawn_channel_job`, `ZqChannelPoll` |
-| async, pull-based | `new_async_iterator`, `ZqAsyncIterable`, `AsyncIterResult` |
-| waking the loop | `make_wake_channel`, `ZqWakeSender`, `wake_handle` |
-| polling jobs | `add_job`, `add_job_no_gc`, `ZqJob`, `ZqPoll::{Done, Again, AgainNoHold}` |
-| keeping JS values alive | `ZqGcTrace`, `ZqGcTraceCtx::mark`, `#[derive(ZqGcTrace)]`, `gc_set_trace_func` |
-| per-runtime storage | `ZqRuntimeState::{new, with, finalize, is_empty}` |
-| declaring the surface | `#[zq_module]`, `#[zq_function]`, `#[zq_export]`, `#[zq_class]`, `#[zq_class_impl]`, `#[zq_method]`, `#[zq_static_method]` |
-| generated per class | `Cls::{class_def, register, new_instance, payload, payload_mut}` |
+| call a function / a constructor | `call_function`, `call_constructor` |
+| call a callback whose throw cannot propagate | `call_event_handler` - returns whether it threw and clears the exception |
+| JSON | `json_parse`, `json_stringify` |
+| class and `instanceof` tests | `is_instance_of`, `is_instance_of_class` |
+| class registration | `register_class`, `new_instance` |
+| a wake handle for another thread | `wake_handle` -> `ZqWakeHandle` |
+| this runtime's identity | `runtime` -> `ZqRuntime::id` |
+| trace values held outside the JS heap | `gc_set_trace_func` |
+
+### 10.2 `ZqCallInfo` - arguments
+
+| need | call |
+| --- | --- |
+| receiver and arity | `this`, `len`, `is_empty` |
+| iterate the arguments | `args` |
+| the raw argument (past the end: `undefined`) | `arg(n)` |
+| checked readers -> `TypeError` | `arg_f64`, `arg_i32`, `arg_bool`, `arg_string` |
+| a string enum -> `RangeError` | `arg_enum(ctx, n, &["a", "b"], "name")` |
+| which stacked JS name was called | `magic` |
+
+### 10.3 `ZqValue` - inspect and convert
+
+| need | call |
+| --- | --- |
+| identity and type | `raw`, `kind` -> `ZqValueType`, `strict_eq` |
+| predicates | `is_undefined`, `is_null`, `is_nullish`, `is_bool`, `is_nan`, `is_exception`, `is_callable`, `is_constructor`, `is_array` |
+| coercions that may throw | `to_f64`, `to_i64`, `to_i32`, `to_bool`, `to_jsstring` |
+| shape checks, no `?` | `as_object`, `as_array`, `as_function` |
+| array length / append | `length`, `push` |
+
+### 10.4 `ZqValue` - build
+
+| need | call |
+| --- | --- |
+| primitives, no context needed | `undefined`, `null`, `bool`, `int32`, `number`, plus `From<i32/u32/f64/bool>` |
+| string, symbol | `new_string`, `new_symbol` |
+| bigint | `new_bigint_i64`, `new_bigint_u64` |
+| object, array | `new_object`, `new_object_with_proto`, `new_array`, `array_from_iter` |
+| error value, native function | `new_error`, `new_function(ctx, f::trampoline(), "name", magic)` |
+| bytes | `typed_array::<T>`, `new_buf`, `new_array_buffer`, `ZqBufKind` |
+| read bytes back / what is it | `buf_bytes`, `get_buf_type` |
+
+### 10.5 `ZqValue` - strings
+
+| need | call |
+| --- | --- |
+| strict read; a non-string throws and leaves the exception pending | `string_read_utf8` |
+| strict read, exception cleared | `try_string_read_utf8` |
+| `String(x)` semantics | `coerce_string` |
+| a symbol's description | `symbol_description` |
+
+### 10.6 `ZqValue` - properties
+
+Each access has two forms: a key that is already a `ZqValue`, and a `_str` form
+taking a UTF-8 `&str` (no intermediate JS string).
+
+| need | value key | UTF-8 key |
+| --- | --- | --- |
+| read | `get_property` | `get_property_str` |
+| write | `set_property` | `set_property_str` |
+| exists | `has_property` | `has_property_str` |
+| delete | `del_property` | `del_property_str` |
+| define a data property (`ZQ_PROP_*`) | `define_property` | `define_property_str` |
+| define a getter/setter | `define_accessor` | `define_accessor_str` |
+| read as string / number / bool | `get_string`, `get_f64`, `get_bool` | `get_string_str`, `get_f64_str`, `get_bool_str` |
+| read as object / array | `get_object`, `get_array` | `get_object_str`, `get_array_str` |
+| the same, clearing the exception | `try_get_*` | `try_get_*_str` |
+| read as an enum (-> `RangeError`) | - | `get_enum` |
+| integer index | `get_index`, `set_index` | - |
+| set and chain | `with` | - |
+| own-property introspection | `own_property_descriptor`, `own_property_descriptor_str`, `own_property_names` -> `ZqPropertyDescriptor` | |
+
+### 10.7 Calling out of a value
+
+| need | call |
+| --- | --- |
+| `obj.method(...)` with `this = obj` | `invoke`, `invoke_str` |
+| `fn(...)` / `new Cls(...)` | `call`, `call_constructor` |
+
+### 10.8 Errors
+
+| need | call |
+| --- | --- |
+| raise, then propagate with `?` | `ctx.throw_type`, `throw_range`, `throw_reference`, `throw_syntax`, `throw_uri`, `throw_eval`, `throw_internal`, `throw_aggregate` |
+| raise any of the above | `ctx.throw(ZqErrorType, msg)` |
+| raise a value you built | `ctx.throw_value(val)` |
+| read / clear the pending exception | `ctx.exception`, `ctx.take_exception` |
+
+### 10.9 Async and the event loop
+
+| need | call |
+| --- | --- |
+| one result, a fresh OS thread | `promise_threaded`, `promise_threaded_void` |
+| one result, your async runtime | `promise_fut`, `promise_fut_void`, `promise_fut_string`, `promise_fut_json`, `promise_fut_on` |
+| `Result` instead of a value | `promise_fut_result`, `promise_fut_result_on` |
+| name the executor once | `set_default_executor` (`ZqExecutor`) |
+| a promise you settle by hand | `new_promise_capability` -> `ZqPromiseCapability { promise, resolve, reject }` |
+| a persistent polling job | `add_job` (`ZqJob`), `add_job_no_gc` -> `ZqPoll::{Done, Again, AgainNoHold}` |
+| native -> JS messages | `make_wake_channel` -> `ZqWakeSender::send`; `ZqWakeHandle::{wake, share}` |
+| drained messages, holds the loop | `spawn_channel_job` -> `ZqChannelPoll::{Continue, Done}` |
+| an event stream, does not hold the loop | `spawn_event_job` |
+| a pull-based stream | `new_async_iterator` (`ZqAsyncIterable`) -> `AsyncIterResult::{Value, Done, Wait}` |
+
+### 10.10 Keeping JS values alive
+
+| need | call |
+| --- | --- |
+| a payload that holds JS values | `impl ZqGcTrace` or `#[derive(ZqGcTrace)]` |
+| mark one handle | `gcx.mark(raw)` on `ZqGcTraceCtx` |
+| values the engine cannot see | `ctx.gc_set_trace_func` |
+| one `S` per runtime | `ZqRuntimeState::{new, with, finalize, is_empty}` |
+| handle types | `ZqRawValue`, `ZqRuntime` |
+
+### 10.11 The declared surface
+
+| need | call |
+| --- | --- |
+| attributes | `#[zq_module]`, `#[zq_function]`, `#[zq_export]`, `#[zq_class]`, `#[zq_class_impl]`, `#[zq_method]`, `#[zq_static_method]`, `#[derive(ZqGcTrace)]` |
+| generated per class | `Cls::{class_def, register, new_instance, payload, payload_mut, take_payload}`, plus `item`, `items` |
 | generated per function | `f::{trampoline, call, item, items}` |
+| a class value back as a handle | `Class::from_def` (unsafe) |
+| this module's dylib path | `module_path` |

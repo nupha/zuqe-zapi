@@ -419,7 +419,8 @@ impl<'cx> ZqValue<'cx> {
     /// Get Symbol's description and encode to utf8
     pub fn symbol_description(&self, ctx: ZqCtx) -> Result<String, ZqError> {
         // Symbol.prototype.description getter (ECMA-262 §20.4.3.2).
-        self.get_str(ctx, "description")?.string_read_utf8(ctx)
+        self.get_property_str(ctx, "description")?
+            .string_read_utf8(ctx)
     }
 
     /// Strictly read this value's string content as UTF-8 into a Rust `String`.

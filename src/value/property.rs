@@ -26,7 +26,7 @@ fn clear_on_err<T>(cx: ZqCtx<'_>, r: Result<Option<T>, ZqError>) -> Option<T> {
 
 impl<'cx> ZqValue<'cx> {
     /// Get a property (works for objects, arrays, typed arrays, ...).
-    pub fn get(
+    pub fn get_property(
         &self,
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
@@ -41,9 +41,18 @@ impl<'cx> ZqValue<'cx> {
         }
     }
 
+    #[deprecated(note = "use `get_property` instead")]
+    pub fn get(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: impl Into<ZqValue<'cx>>,
+    ) -> Result<ZqValue<'cx>, ZqError> {
+        self.get_property(ctx, key)
+    }
+
     /// Get a property by UTF-8 key without allocating an intermediate JS
     /// string (the host resolves the key to an interned atom).
-    pub fn get_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<ZqValue<'cx>, ZqError> {
+    pub fn get_property_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<ZqValue<'cx>, ZqError> {
         let api = ZqApi::singleton();
         let v = unsafe { (api.get_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
         if v == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
@@ -53,8 +62,13 @@ impl<'cx> ZqValue<'cx> {
         }
     }
 
+    #[deprecated(note = "use `get_property_str` instead")]
+    pub fn get_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<ZqValue<'cx>, ZqError> {
+        self.get_property_str(ctx, key)
+    }
+
     /// Set a property.
-    pub fn set(
+    pub fn set_property(
         &self,
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
@@ -67,8 +81,18 @@ impl<'cx> ZqValue<'cx> {
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
+    #[deprecated(note = "use `set_property` instead")]
+    pub fn set(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: impl Into<ZqValue<'cx>>,
+        val: impl Into<ZqValue<'cx>>,
+    ) -> Result<bool, ZqError> {
+        self.set_property(ctx, key, val)
+    }
+
     /// Set a property by UTF-8 key without allocating an intermediate JS string.
-    pub fn set_str(
+    pub fn set_property_str(
         &self,
         ctx: ZqCtx<'cx>,
         key: &str,
@@ -82,40 +106,78 @@ impl<'cx> ZqValue<'cx> {
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
+    #[deprecated(note = "use `set_property_str` instead")]
+    pub fn set_str(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: &str,
+        val: impl Into<ZqValue<'cx>>,
+    ) -> Result<bool, ZqError> {
+        self.set_property_str(ctx, key, val)
+    }
+
     /// Check whether a property exists.
-    pub fn has(&self, ctx: ZqCtx<'cx>, key: impl Into<ZqValue<'cx>>) -> Result<bool, ZqError> {
+    pub fn has_property(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: impl Into<ZqValue<'cx>>,
+    ) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let key = key.into();
         let r = unsafe { (api.has_property)(ctx.raw, self.raw, key.raw()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
+    #[deprecated(note = "use `has_property` instead")]
+    pub fn has(&self, ctx: ZqCtx<'cx>, key: impl Into<ZqValue<'cx>>) -> Result<bool, ZqError> {
+        self.has_property(ctx, key)
+    }
+
     /// Check whether a property exists (UTF-8 key, no intermediate JS string).
-    pub fn has_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
+    pub fn has_property_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let r = unsafe { (api.has_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
+    #[deprecated(note = "use `has_property_str` instead")]
+    pub fn has_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
+        self.has_property_str(ctx, key)
+    }
+
     /// Delete a property.
-    pub fn delete(&self, ctx: ZqCtx<'cx>, key: impl Into<ZqValue<'cx>>) -> Result<bool, ZqError> {
+    pub fn del_property(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: impl Into<ZqValue<'cx>>,
+    ) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let key = key.into();
         let r = unsafe { (api.delete_property)(ctx.raw, self.raw, key.raw()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
+    #[deprecated(note = "use `del_property` instead")]
+    pub fn delete(&self, ctx: ZqCtx<'cx>, key: impl Into<ZqValue<'cx>>) -> Result<bool, ZqError> {
+        self.del_property(ctx, key)
+    }
+
     /// Delete a property by UTF-8 key without allocating an intermediate JS string.
-    pub fn delete_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
+    pub fn del_property_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
         let api = ZqApi::singleton();
         let r = unsafe { (api.delete_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len()) };
         if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
+    #[deprecated(note = "use `del_property_str` instead")]
+    pub fn delete_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<bool, ZqError> {
+        self.del_property_str(ctx, key)
+    }
+
     // ── property definition (descriptor) ──
 
     /// Define `key` as a data property with attributes `flags` (`ZQ_PROP_*`).
-    pub fn define(
+    pub fn define_property(
         &self,
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
@@ -129,8 +191,19 @@ impl<'cx> ZqValue<'cx> {
         if r < 0 { Err(ZqError) } else { Ok(()) }
     }
 
+    #[deprecated(note = "use `define_property` instead")]
+    pub fn define(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: impl Into<ZqValue<'cx>>,
+        val: impl Into<ZqValue<'cx>>,
+        flags: u32,
+    ) -> Result<(), ZqError> {
+        self.define_property(ctx, key, val, flags)
+    }
+
     /// Define a UTF-8-keyed data property with attributes `flags`.
-    pub fn define_str(
+    pub fn define_property_str(
         &self,
         ctx: ZqCtx<'cx>,
         key: &str,
@@ -143,6 +216,17 @@ impl<'cx> ZqValue<'cx> {
             (api.define_property_str)(ctx.raw, self.raw, key.as_ptr(), key.len(), val.raw(), flags)
         };
         if r < 0 { Err(ZqError) } else { Ok(()) }
+    }
+
+    #[deprecated(note = "use `define_property_str` instead")]
+    pub fn define_str(
+        &self,
+        ctx: ZqCtx<'cx>,
+        key: &str,
+        val: impl Into<ZqValue<'cx>>,
+        flags: u32,
+    ) -> Result<(), ZqError> {
+        self.define_property_str(ctx, key, val, flags)
     }
 
     /// Define `key` as an accessor property. Pass `ZqValue::undefined()` for an
@@ -379,7 +463,7 @@ impl<'cx> ZqValue<'cx> {
 
     /// Get `self[idx]` by integer index.
     pub fn get_index(&self, ctx: ZqCtx<'cx>, idx: u32) -> Result<ZqValue<'cx>, ZqError> {
-        self.get(ctx, idx)
+        self.get_property(ctx, idx)
     }
 
     /// Set `self[idx] = val` by integer index.
@@ -389,7 +473,7 @@ impl<'cx> ZqValue<'cx> {
         idx: u32,
         val: impl Into<ZqValue<'cx>>,
     ) -> Result<bool, ZqError> {
-        self.set(ctx, idx, val)
+        self.set_property(ctx, idx, val)
     }
 
     /// Get `self[key]` as a Rust `String`; `None` when absent or nullish.
@@ -398,7 +482,7 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<String>, ZqError> {
-        let v = self.get(ctx, key)?;
+        let v = self.get_property(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else {
@@ -408,7 +492,7 @@ impl<'cx> ZqValue<'cx> {
 
     /// Like [`get_string`](Self::get_string) with a UTF-8 key.
     pub fn get_string_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<Option<String>, ZqError> {
-        let v = self.get_str(ctx, key)?;
+        let v = self.get_property_str(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else {
@@ -422,7 +506,7 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<f64>, ZqError> {
-        let v = self.get(ctx, key)?;
+        let v = self.get_property(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else {
@@ -432,7 +516,7 @@ impl<'cx> ZqValue<'cx> {
 
     /// Like [`get_f64`](Self::get_f64) with a UTF-8 key.
     pub fn get_f64_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<Option<f64>, ZqError> {
-        let v = self.get_str(ctx, key)?;
+        let v = self.get_property_str(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else {
@@ -446,7 +530,7 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<bool>, ZqError> {
-        let v = self.get(ctx, key)?;
+        let v = self.get_property(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else {
@@ -456,7 +540,7 @@ impl<'cx> ZqValue<'cx> {
 
     /// Like [`get_bool`](Self::get_bool) with a UTF-8 key.
     pub fn get_bool_str(&self, ctx: ZqCtx<'cx>, key: &str) -> Result<Option<bool>, ZqError> {
-        let v = self.get_str(ctx, key)?;
+        let v = self.get_property_str(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else {
@@ -471,7 +555,7 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<ZqValue<'cx>>, ZqError> {
-        let v = self.get(ctx, key)?;
+        let v = self.get_property(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else if v.kind() == ZqValueType::Object {
@@ -488,7 +572,7 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: &str,
     ) -> Result<Option<ZqValue<'cx>>, ZqError> {
-        let v = self.get_str(ctx, key)?;
+        let v = self.get_property_str(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else if v.kind() == ZqValueType::Object {
@@ -505,7 +589,7 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: impl Into<ZqValue<'cx>>,
     ) -> Result<Option<ZqValue<'cx>>, ZqError> {
-        let v = self.get(ctx, key)?;
+        let v = self.get_property(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else if v.is_array(ctx)? {
@@ -521,7 +605,7 @@ impl<'cx> ZqValue<'cx> {
         ctx: ZqCtx<'cx>,
         key: &str,
     ) -> Result<Option<ZqValue<'cx>>, ZqError> {
-        let v = self.get_str(ctx, key)?;
+        let v = self.get_property_str(ctx, key)?;
         if v.is_nullish() {
             Ok(None)
         } else if v.is_array(ctx)? {
@@ -661,7 +745,7 @@ impl<'cx> ZqValue<'cx> {
         key: impl Into<ZqValue<'cx>>,
         val: impl Into<ZqValue<'cx>>,
     ) -> Result<&Self, ZqError> {
-        self.set(ctx, key, val)?;
+        self.set_property(ctx, key, val)?;
         Ok(self)
     }
 

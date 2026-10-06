@@ -288,7 +288,7 @@ impl<'cx> ZqCtx<'cx> {
             return;
         }
         let msg = exc
-            .get_str(*self, "message")
+            .get_property_str(*self, "message")
             .ok()
             .and_then(|v| v.string_read_utf8(*self).ok())
             .unwrap_or_else(|| "<unprintable exception>".to_string());
