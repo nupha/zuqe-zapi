@@ -3,6 +3,7 @@
 
 use crate::{
     ZqCtx, ZqError,
+    class::Class,
     ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqPropertyDescriptorS, ZqRawValue},
 };
 
@@ -294,6 +295,30 @@ impl<'cx> ZqValue<'cx> {
     pub fn is_constructor(&self) -> bool {
         let api = ZqApi::singleton();
         unsafe { (api.is_constructor)(self.raw) != 0 }
+    }
+
+    /// `self instanceof target` for an arbitrary constructor value (honours
+    /// `Symbol.hasInstance`).
+    pub fn is_instance_of(
+        &self,
+        ctx: ZqCtx<'cx>,
+        target: impl Into<ZqValue<'cx>>,
+    ) -> Result<bool, ZqError> {
+        let api = ZqApi::singleton();
+        let target = target.into();
+        let r = unsafe { (api.instanceof)(ctx.raw, self.raw, target.raw()) };
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
+    }
+
+    /// `self instanceof class` for a native class (honours `Symbol.hasInstance`).
+    pub fn is_instance_of_class<T>(
+        &self,
+        ctx: ZqCtx<'cx>,
+        class: &Class<'_, T>,
+    ) -> Result<bool, ZqError> {
+        let api = ZqApi::singleton();
+        let r = unsafe { (api.instanceof_class)(ctx.raw, self.raw, class.def()) };
+        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     // ── own property introspection ──

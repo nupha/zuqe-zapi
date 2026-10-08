@@ -3,7 +3,7 @@
 
 mod buf;
 mod descriptor;
-mod property;
+mod object;
 
 pub use {
     buf::{ZqBufKind, ZqTypedArrayElem},

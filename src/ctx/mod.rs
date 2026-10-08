@@ -17,7 +17,6 @@ use std::marker::PhantomData;
 
 use crate::{
     ZqError, ZqRawCtx, ZqRuntime, ZqValue,
-    class::Class,
     ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqRawValue},
 };
 
@@ -76,32 +75,6 @@ impl<'cx> ZqCtx<'cx> {
     pub fn runtime(&self) -> &ZqRuntime {
         let api = ZqApi::singleton();
         unsafe { &*(api.get_runtime)(self.raw) }
-    }
-
-    /// `val instanceof class` for a native class (honours `Symbol.hasInstance`).
-    pub fn is_instance_of_class<T>(
-        &self,
-        val: impl Into<ZqValue<'cx>>,
-        class: &Class<'_, T>,
-    ) -> Result<bool, ZqError> {
-        let api = ZqApi::singleton();
-        let val = val.into();
-        let r = unsafe { (api.instanceof_class)(self.raw, val.raw(), class.def()) };
-        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
-    }
-
-    /// `val instanceof target` for an arbitrary constructor value (honours
-    /// `Symbol.hasInstance`).
-    pub fn is_instance_of(
-        &self,
-        val: impl Into<ZqValue<'cx>>,
-        target: impl Into<ZqValue<'cx>>,
-    ) -> Result<bool, ZqError> {
-        let api = ZqApi::singleton();
-        let val = val.into();
-        let target = target.into();
-        let r = unsafe { (api.instanceof)(self.raw, val.raw(), target.raw()) };
-        if r < 0 { Err(ZqError) } else { Ok(r != 0) }
     }
 
     /// Look up a property on the global object (`globalThis[name]`).
