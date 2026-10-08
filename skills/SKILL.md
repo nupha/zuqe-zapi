@@ -1,12 +1,12 @@
 ---
 name: write-zapi-extension-library
-description: How to write a zapi native extension library - build setup, the five attributes, code patterns for every kind of function, argument validation, errors, threading, and GC tracing. Read before creating or modifying a zapi extension.
+description: How to write a zapi native extension library - build setup, the proc macros, code patterns for every kind of function, argument validation, errors, threading, and GC tracing. Read before creating or modifying a zapi extension.
 ---
 
 # Writing a zapi extension
 
 A zapi extension is a `cdylib` the JS runtime loads and calls through a
-generated C ABI. You write ordinary Rust plus a handful of attributes; they
+generated C ABI. You write ordinary Rust plus a few proc macros; they
 generate the glue, the export list, and the module entry point. You never write
 FFI code.
 
@@ -122,11 +122,38 @@ AIKE_LIB_PATH=$PWD/target/debug aike -m tests/t.mjs
 - `ReferenceError: module '...': zapi ABI/API version N mismatch` at import means
   your `zuqe-zapi` version does not match the host's.
 
-## 2. The attributes
+### Files that live next to your dylib
 
-Every macro comes from the `zuqe_zapi_macros` crate and must be imported. The
-runtime types (`ZqCtx`, `ZqValue`, `ZqCallInfo`, `ZqError`, ...) come from
-`zuqe_zapi`. So each source file that uses a macro needs both:
+The host knows where it loaded the `.aike` from and hands that path to the
+module. `module_path()` returns it - the resolved file path of the loaded
+library, not the name JS imported it by - so its parent is the directory to
+resolve resources against:
+
+```rust
+use std::path::PathBuf;
+
+/// `dir/models/foo.bin` next to the loaded library.
+fn resource(rel: &str) -> Option<PathBuf> {
+    Some(PathBuf::from(module_path()?).parent()?.join(rel))
+}
+```
+
+- Call it from `module_init` and cache the directory; it never changes.
+- `None` when the host did not supply a path, so keep a fallback (an env var or
+  a path passed from JS) rather than treating it as guaranteed.
+- JS sees the same string as the injected `__file__` export, so a script can
+  derive the same directory without asking the extension. Export your own
+  `__file__` only if you intend to override it.
+- Anything under the load directory must be copied there by the caller in
+  production - a dev `cargo build` puts the dylib in `target/debug` while the
+  installed one sits beside the `.aike` files.
+
+## 2. The proc macros
+
+Seven attribute macros and one derive, all from the `zuqe_zapi_macros` crate,
+and each must be imported. The runtime types (`ZqCtx`, `ZqValue`, `ZqCallInfo`,
+`ZqError`, ...) come from `zuqe_zapi`. So each source file that uses a macro
+needs both:
 
 ```rust
 use zuqe_zapi::*;
@@ -854,6 +881,7 @@ confirm it does something:
 | callback argument not validated | events silently dropped | check `is_callable()` at registration |
 | `ZqRuntimeState::with` re-entering the same slot | panic, by design | do not call the same slot inside `f` |
 | finalize hook calling a JS API | crash at teardown | drop state, do not trace it |
+| resolving a bundled resource against the cwd | works in dev, missing in the install | resolve against `module_path()`'s directory |
 | stale build after a scripted edit | you test the wrong binary | `touch` + delete artifact |
 | release build | memory bugs become silent corruption | debug everywhere |
 
@@ -984,8 +1012,8 @@ taking a UTF-8 `&str` (no intermediate JS string).
 
 | need | call |
 | --- | --- |
-| attributes | `#[zq_module]`, `#[zq_function]`, `#[zq_export]`, `#[zq_class]`, `#[zq_class_impl]`, `#[zq_method]`, `#[zq_static_method]`, `#[derive(ZqGcTrace)]` |
+| proc macros | `#[zq_module]`, `#[zq_function]`, `#[zq_export]`, `#[zq_class]`, `#[zq_class_impl]`, `#[zq_method]`, `#[zq_static_method]`, `#[derive(ZqGcTrace)]` |
 | generated per class | `Cls::{class_def, register, new_instance, payload, payload_mut, take_payload}`, plus `item`, `items` |
 | generated per function | `f::{trampoline, call, item, items}` |
 | a class value back as a handle | `Class::from_def` (unsafe) |
-| this module's dylib path | `module_path` |
+| the loaded dylib's full path, `None` if the host gave none | `module_path` - chapter 1 |
