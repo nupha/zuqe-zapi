@@ -6,20 +6,15 @@ use std::ffi::{c_char, c_void};
 /// ABI (binary layout) contract version (high 16 bits of `ZqModuleInfo.version`).
 ///
 /// Meaning: memory layout and function pointer signatures of the `ZqApi` table and structs.
-pub const ZQ_ABI_VERSION: u16 = 2;
+pub const ZQ_ABI_VERSION: u16 = 3;
 
 /// API (feature) version (low 16 bits of `ZqModuleInfo.version`).
 ///
 /// Meaning: capability tier provided by the `ZqApi` table, independent of binary layout.
-pub const ZQ_API_VERSION: u16 = 1;
+pub const ZQ_API_VERSION: u16 = 2;
 
 /// Pack ABI and API versions into a single u32: high 16 bits = ABI, low 16 bits = API.
 pub const ZQ_VERSION_PACKED: u32 = ((ZQ_ABI_VERSION as u32) << 16) | (ZQ_API_VERSION as u32);
-
-/// The minium allowed abi
-pub const ZQ_ABI_BASE: u16 = 2;
-/// The minium allowed api
-pub const ZQ_API_BASE: u16 = 1;
 
 /// `ZqFieldDef.kind` — a method (`FieldDef::FUNC`).
 pub const ZQ_FIELD_FUNC: u8 = 0;
@@ -39,6 +34,110 @@ pub const ZQ_FIELD_FLOAT: u8 = 6;
 pub const ZQ_FIELD_BOOL: u8 = 7;
 /// `ZqFieldDef.kind` — `undefined` (`FieldDef::UNDEFINED`).
 pub const ZQ_FIELD_UNDEFINED: u8 = 8;
+
+// ── `ZqMemberDef.kind` ────────────────────────────────────────────────────
+//
+// A member installed on a class *prototype*. Method and accessor kinds mirror
+// `ZQ_FIELD_FUNC` / `ZQ_FIELD_GETSET`; the constant kinds mirror
+// `ZQ_FIELD_STR` .. `ZQ_FIELD_UNDEFINED`.
+
+/// `ZqMemberDef.kind` — a method (`body`).
+pub const ZQ_MEMBER_METHOD: u8 = 0;
+/// `ZqMemberDef.kind` — an accessor (`get` / `set`, either may be absent).
+pub const ZQ_MEMBER_GETSET: u8 = 1;
+/// `ZqMemberDef.kind` — a constant string (`str_val`).
+pub const ZQ_MEMBER_STR: u8 = 2;
+/// `ZqMemberDef.kind` — a constant integer (`i64_val`).
+pub const ZQ_MEMBER_INT: u8 = 3;
+/// `ZqMemberDef.kind` — a constant float (`f64_val`).
+pub const ZQ_MEMBER_FLOAT: u8 = 4;
+/// `ZqMemberDef.kind` — a constant boolean (`u8_val`).
+pub const ZQ_MEMBER_BOOL: u8 = 5;
+/// `ZqMemberDef.kind` — `undefined`.
+pub const ZQ_MEMBER_UNDEFINED: u8 = 6;
+
+impl ZqFieldDef {
+    /// A neutral field, used to fill an array before its entries are written.
+    pub const EMPTY: Self = Self {
+        name: std::ptr::null(),
+        kind: ZQ_FIELD_UNDEFINED,
+        arity: 0,
+        magic: 0,
+        prop_flags: 0,
+        body: None,
+        get: None,
+        set: None,
+        class_def: std::ptr::null(),
+        value_fn: None,
+        str_val: std::ptr::null(),
+        i64_val: 0,
+        f64_val: 0.0,
+        u8_val: 0,
+    };
+}
+
+/// Concatenate two field slices into one fixed-size array.
+///
+/// `N` must be `declared.len() + extra.len()`; entries keep their order, so
+/// `extra` is installed after `declared` and overwrites it where names collide.
+/// The proc macro emits one `ZqFieldDef` array per class and reaches for this
+/// when `#[zq_class(prototype_members = ..)]` appends a table.
+pub const fn merge_fields<const N: usize>(
+    declared: &[ZqFieldDef],
+    extra: &[ZqFieldDef],
+) -> [ZqFieldDef; N] {
+    let mut out = [ZqFieldDef::EMPTY; N];
+    let mut i = 0;
+    while i < declared.len() {
+        out[i] = declared[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < extra.len() {
+        out[declared.len() + j] = extra[j];
+        j += 1;
+    }
+    out
+}
+
+/// One member to install on a class prototype.
+///
+/// The wire form of [`crate::ZqMember`], and what a `const` table of
+/// `#[zq_class(prototype_members = ...)]` holds. Names are NUL-terminated C
+/// strings that must stay valid for the duration of the call — the host
+/// interns them, so nothing is retained.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ZqMemberDef {
+    /// Property name, NUL-terminated.
+    pub name: *const c_char,
+    /// `ZQ_MEMBER_*`
+    pub kind: u8,
+    /// Function arity (`METHOD`).
+    pub arity: u8,
+    /// Dispatch value; `ZqCallInfo::magic()` yields it in the body.
+    pub magic: i32,
+    /// `ZQ_PROP_*`. Defaults to writable + configurable, so a later install of
+    /// the same name replaces this one.
+    pub flags: u32,
+    /// `METHOD`: the body.
+    pub body: Option<ZqBodyFn>,
+    /// `GETSET`: the getter.
+    pub get: Option<ZqBodyFn>,
+    /// `GETSET`: the setter.
+    pub set: Option<ZqBodyFn>,
+    /// `STR`: NUL-terminated value.
+    pub str_val: *const c_char,
+    /// `INT`
+    pub i64_val: i64,
+    /// `FLOAT`
+    pub f64_val: f64,
+    /// `BOOL`
+    pub u8_val: u8,
+}
+
+// Every pointer in here points at a literal in the extension's read-only data.
+unsafe impl Sync for ZqMemberDef {}
 // reserved (phase 2): ZQ_FIELD_OBJECT = 9, ZQ_FIELD_ALIAS = 10
 
 // ── property flags ──
@@ -1214,4 +1313,27 @@ pub struct ZqApi {
         dst_len: usize,
         offset: usize,
     ) -> i64,
+
+    //
+    // --- ABI 3 ---
+    //
+    /// The prototype object of a class previously passed to `register_class`.
+    /// This is how an extension reaches its own class prototype without
+    /// allocating a probe instance and asking `Object.getPrototypeOf`.
+    ///
+    /// Returns the `exception` sentinel when `class_id` is not registered.
+    pub class_prototype: unsafe extern "C" fn(env: ZqRawCtx, class_id: i32) -> ZqRawValue,
+
+    /// Installs members on the prototype of a registered class.
+    ///
+    /// Later entries replace earlier ones, and replace any member already on
+    /// the prototype — this is `install_fields` semantics, not a merge that
+    /// rejects collisions. Not atomic: entries before a failing one stay
+    /// installed and the call reports the error.
+    pub class_install_prototype_members: unsafe extern "C" fn(
+        env: ZqRawCtx,
+        class_id: i32,
+        members: *const ZqMemberDef,
+        len: usize,
+    ) -> i32,
 }

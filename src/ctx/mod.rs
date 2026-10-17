@@ -13,11 +13,12 @@ pub use {
     wake::ZqWakeHandle,
 };
 
+use std::ffi::CString;
 use std::marker::PhantomData;
 
 use crate::{
-    ZqError, ZqRawCtx, ZqRuntime, ZqValue,
-    ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqRawValue},
+    ZqError, ZqMember, ZqRawCtx, ZqRuntime, ZqValue,
+    ffi::{ZQ_CONST_VALUE_SLOT_EXCEPTION, ZqApi, ZqCallInfoS, ZqClassDef, ZqMemberDef, ZqRawValue},
 };
 
 #[derive(Debug)]
@@ -183,6 +184,87 @@ impl<'cx> ZqCtx<'cx> {
         let api = ZqApi::singleton();
         let r = unsafe { (api.register_class)(self.raw, def) };
         if r < 0 { Err(ZqError) } else { Ok(r) }
+    }
+
+    /// The prototype object of a registered class. `class_id` is what
+    /// [`register_class`] returned.
+    ///
+    /// Needed to add members to a class prototype at runtime — for a surface
+    /// whose names only exist at runtime, such as a reflection table. A class
+    /// whose members are all written in Rust should declare them with
+    /// `#[zq_method]` instead of reaching for this.
+    pub fn class_prototype(&self, class_id: i32) -> Result<ZqValue<'cx>, ZqError> {
+        let api = ZqApi::singleton();
+        let raw = unsafe { (api.class_prototype)(self.raw, class_id) };
+        if raw == api.const_values[ZQ_CONST_VALUE_SLOT_EXCEPTION] {
+            Err(ZqError)
+        } else {
+            Ok(ZqValue::from(raw))
+        }
+    }
+
+    /// Install members on the prototype of a registered class.
+    ///
+    /// For a surface whose names are not written out in Rust — a data table, a
+    /// reflection table. Members written in Rust belong in `#[zq_method]`.
+    ///
+    /// **Names collide by overwriting.** A later member replaces an earlier
+    /// one, and replaces a `#[zq_method]` of the same name. Nothing here
+    /// rejects a collision; picking the right names is the caller's job.
+    ///
+    /// **Not atomic.** If member *k* fails, members `0..k` stay installed and
+    /// this call reports the error.
+    pub fn class_install_prototype_members(
+        &self,
+        class_id: i32,
+        members: &[ZqMember<'_>],
+    ) -> Result<(), ZqError> {
+        let api = ZqApi::singleton();
+
+        // The wire form wants NUL-terminated names, and the members borrow
+        // theirs from the caller. NUL-terminate onto the stack: the host
+        // interns each name during the call, so nothing outlives it.
+        let mut names: Vec<CString> = Vec::with_capacity(members.len());
+        let mut values: Vec<CString> = Vec::with_capacity(members.len());
+        let mut defs: Vec<ZqMemberDef> = Vec::with_capacity(members.len());
+        for member in members {
+            let name = CString::new(member.name)
+                .map_err(|_| self.throw_type("a member name must not contain NUL"))?;
+            let value = match member.value {
+                crate::ZqMemberValue::Str(text) => CString::new(text)
+                    .map_err(|_| self.throw_type("a member string must not contain NUL"))?,
+                _ => CString::default(),
+            };
+            names.push(name);
+            values.push(value);
+        }
+        for ((member, name), value) in members.iter().zip(&names).zip(&values) {
+            defs.push(crate::member::to_def(member, name.as_ptr(), value.as_ptr()));
+        }
+
+        let r = unsafe {
+            (api.class_install_prototype_members)(self.raw, class_id, defs.as_ptr(), defs.len())
+        };
+        if r < 0 { Err(ZqError) } else { Ok(()) }
+    }
+
+    /// Install methods on a class prototype, all sharing one body.
+    ///
+    /// `cc.magic()` in `body` is the index of the name in `names`, so the
+    /// dispatcher reads the same table the names came from and there is no
+    /// second numbering to keep in step.
+    pub fn class_install_prototype_methods(
+        &self,
+        class_id: i32,
+        names: &[&str],
+        body: crate::ffi::ZqBodyFn,
+    ) -> Result<(), ZqError> {
+        let members: Vec<ZqMember<'_>> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ZqMember::method(name, body, index as i32))
+            .collect();
+        self.class_install_prototype_members(class_id, &members)
     }
 
     #[allow(clippy::not_unsafe_ptr_arg_deref)]

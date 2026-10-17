@@ -383,6 +383,38 @@ is why the helper is worth having once per class.
 Any method may return a Promise - a method is not "sync" or "async", it just
 returns whatever the body returns (see 4.3).
 
+#### Inheritance
+
+`extends = Base` names another `#[zq_class]` as the parent. The host chains both
+sides at registration, so a child instance finds every parent member and
+`Child.__proto__ === Base`.
+
+```rust
+#[zq_class(name = "Transaction", payload = TxPayload, extends = JsDatabase)]
+pub struct JsTransaction;
+```
+
+```js
+const t = await Database.open("db");
+t.close(); // inherited from Database
+t instanceof Database; // true — instanceof walks the prototype chain
+Database.isOpen(t); // inherited static
+```
+
+- **Declaration order does not matter.** The child may be declared, exported or
+  registered before its parent; the host links them once both are known.
+- **`Base` must itself be a `#[zq_class]`** from the same extension. A parent
+  from another dylib cannot be named and is silently not linked.
+- **This is member-lookup inheritance, not `super`.** A `#[zq_method]` body is
+  Rust and has no `super` syntax: a child that needs the parent's behaviour
+  calls it by name — `JsDatabase::close(ctx, cc)` — rather than `super.close()`.
+- **Payloads are independent.** `extends` chains prototypes; it does not make
+  the child a valid `Base` for `Base::payload`. Give the child its own payload,
+  or a shared one, deliberately.
+- The reverse direction needs nothing: `class Derived extends NativeBase` in a
+  script already works, because the constructor trampoline derives the instance
+  prototype from `new_target.prototype`.
+
 ### 4.2 Returning values
 
 | JS value                | how                                                                            |
@@ -622,6 +654,77 @@ are building - the only way to put one there:
 let f = ZqValue::new_function(ctx, js_accept::trampoline(), "accept", magic)?;
 obj.set_property_str(ctx, "accept", f)?;
 ```
+
+#### Reaching a class prototype
+
+`ZqCtx::class_prototype` takes the id `register_class` returned:
+
+```rust
+let class_id = JsElement::register_id(ctx)?;      // `register` throws the id away
+let proto = ctx.class_prototype(class_id)?;
+```
+
+Two ways to add members whose names are not written out in Rust:
+
+```rust
+// a `&'static [ZqMemberDef]` const, spliced in at compile time
+#[zq_class(name = "Element", prototype_members = STYLE_MEMBERS)]
+pub struct JsElement;
+
+// or installed at runtime, for names computed then
+ctx.class_install_prototype_methods(class_id, &["flex", "w"], style_op::trampoline())?;
+```
+
+The convenience form assigns `cc.magic()` as the index, so the dispatcher reads
+the same order the names came from and there is no second numbering to keep in
+step. The slice form takes explicit `magic` and covers accessors and constants
+too.
+
+Anything whose names you can write down belongs in `#[zq_method]` instead, where
+the compiler checks the signature and there is one copy of the name.
+
+`register_id` exists only because `Cls::register` returns `()`. Prefer
+`register` unless you need the id.
+
+**Names must be new.** Both forms refuse a name the class already has, and the
+refusal is the point rather than a fallback:
+
+```rust
+#[zq_class(name = "Tabled", prototype_members = T)]   // T claims "declared"
+struct Tabled;
+#[zq_class_impl]
+impl Tabled {
+    #[zq_method(name = "declared")] fn declared(...) { }   // a TypeError, by name
+}
+```
+
+```
+TypeError: member 'declared' is declared twice on class id 42
+```
+
+A name may appear once across everything a class declares:
+
+| collision | refused by |
+|---|---|
+| twice in one table | the host, at install |
+| a table name vs `#[zq_method]` | the host, at class init |
+| a table name vs `#[zq_static_method]` | the host, at class init |
+| a `#[zq_method]` vs `#[zq_static_method]` | **the macro, at compile time** |
+| a name the prototype already owns | the host, at install |
+| a reserved name — `constructor` on the prototype, `length`/`name`/`prototype` on the constructor | the host, at class init |
+
+**Why refuse when the engine could replace.** The engine's ordinary redefine
+path (`define_property`, via `check_define_prop_flags`) does replace a
+configurable property, and zapi members are installed configurable — so an
+overwrite is *possible*. It is refused on purpose: a name appearing twice in
+your own class is almost always a mistake, and silently keeping the last one
+hides it. Note also that `install_fields` appends lazy slots rather than merging
+them, so a duplicate is not even a merge at that layer; making it work would mean
+routing these entries through the redefine path instead.
+
+A class registered twice by the same extension gets **two** class ids, and
+`new_instance` resolves to the first — so a second `register_id` plus a second
+install lands on a different prototype than the first. Install once.
 
 ### 4.8 Binary data
 
@@ -987,7 +1090,13 @@ taking a UTF-8 `&str` (no intermediate JS string).
 | need                                                                                                                                                                                                                                                                                   | call                                                                                                                                               |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | proc macros                                                                                                                                                                                                                                                                            | `#[zq_module]`, `#[zq_function]`, `#[zq_export]`, `#[zq_class]`, `#[zq_class_impl]`, `#[zq_method]`, `#[zq_static_method]`, `#[derive(ZqGcTrace)]` |
-| generated per class                                                                                                                                                                                                                                                                    | `Cls::{class_def, register, new_instance, payload, payload_mut, take_payload}`, plus `item`, `items`                                               |
+| generated per class                                                                                                                                                                                                                                                                    | `Cls::{class_def, register, register_id, new_instance, payload, payload_mut, take_payload}`, plus `item`, `items`                                  |
 | generated per function                                                                                                                                                                                                                                                                 | `f::{trampoline, call, item, items}`                                                                                                               |
+| a prototype whose members come from a table                    | `#[zq_class(prototype_members = ..)]`, or `class_install_prototype_members` / `class_install_prototype_methods` |
+| **the names JS can see**, for `zapi-dts` or a `.d.ts` reconciliation step   | `Cls::MEMBERS` / `f::MEMBERS` -> `&'static [ZqMemberMeta]`       |
 | a class value back as a handle                                                                                                                                                                                                                                                         | `Class::from_def` (unsafe)                                                                                                                         |
 | the loaded dylib's resolved path (not the name JS imported it by), `None` if the host gave none. Its parent is where to resolve bundled resources; the same string is the injected `__file__`. Call once in `module_init` and cache it; copy resources beside the dylib in production. | `module_path`                                                                                                                                      |
+
+`MEMBERS` lists only what the macros declared. Members an extension installs at
+runtime through `class_prototype` are invisible to it, so a generator has to
+take those names from the table it installed them from.
