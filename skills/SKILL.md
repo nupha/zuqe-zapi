@@ -712,11 +712,15 @@ pub const STYLE_MEMBERS: [ZqMemberDef; STYLES.len()] =
     to_members(STYLES, style_op::trampoline());
 ```
 
-`to_members` is a ten-line `const fn` over that table. Writing the `ZqMemberDef`
+`to_members` is your own ten-line `const fn` over that table — zapi has no such
+helper, because it would need to know your `StyleDef`. Writing the `ZqMemberDef`
 table out by hand instead puts each name in two places and every magic in a third.
 
-Anything whose names you can write down belongs in `#[zq_method]` instead, where
-the compiler checks the signature and there is one copy of the name.
+Prefer step 1 over step 2 where it fits: a handful of individually written methods
+read better as `#[zq_method]` fns, where the compiler checks each signature. Step
+2 is for a surface that is _already_ a table — a list of styles, a state enum, a
+descriptor list — so that adding an entry is one line in the table you maintain
+anyway.
 
 `register_id` exists only because `Cls::register` returns `()`. Prefer
 `register` unless you need the id.
@@ -751,11 +755,16 @@ A name may appear once across everything a class declares:
 **Why refuse when the engine could replace.** The engine's ordinary redefine
 path (`define_property`, via `check_define_prop_flags`) does replace a
 configurable property, and zapi members are installed configurable — so an
-overwrite is _possible_. It is refused on purpose: a name appearing twice in
-your own class is almost always a mistake, and silently keeping the last one
-hides it. Note also that `install_fields` appends lazy slots rather than merging
-them, so a duplicate is not even a merge at that layer; making it work would mean
-routing these entries through the redefine path instead.
+overwrite would be _possible_. It is refused on purpose: a name appearing twice
+in your own class is almost always a mistake, and silently keeping the last one
+hides it.
+
+At the layer underneath it is not even a choice. `define_lazy_property` appends
+a slot rather than merging, so a duplicate would leave the shape and the value
+table disagreeing on how many slots there are — silent corruption. It now
+returns `Err` on an existing name rather than asserting, which is why this
+refusal reaches a `TypeError` with the member's name in it instead of a
+debug-build abort.
 
 A class registered twice by the same extension gets **two** class ids, and
 `new_instance` resolves to the first — so a second `register_id` plus a second
