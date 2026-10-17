@@ -657,6 +657,28 @@ obj.set_property_str(ctx, "accept", f)?;
 
 #### Reaching a class prototype
 
+**Declare members. Installing them at runtime is the fallback, not the way to
+write it.** Work down this list and stop at the first that fits:
+
+|     | form                                      | use when                                            |
+| --- | ----------------------------------------- | --------------------------------------------------- |
+| 1   | `#[zq_method]` / `#[zq_static_method]`    | the name is a literal — always the default          |
+| 2   | `#[zq_class(prototype_members = T)]`      | names come from a table you own and it is a `const` |
+| 3   | `ctx.class_install_prototype_members(..)` | the names only exist once the host is running       |
+
+Step 3 is a fallback because it is the only one of the three that can be wrong in
+ways the compiler cannot see. It is a runtime call, so a name that collides with
+something already installed throws _after_ the members before it have landed —
+the class ends up half-built. A declared member or a `const` table is installed
+while the class is being set up, so a collision refuses the whole class instead
+of leaving it patched. A name known at compile time also has exactly one place to
+be wrong; a runtime table has the table, the dispatcher, and whatever computed
+the magic.
+
+Reach for step 3 only when the names genuinely arrive from the host — a
+reflection table over a foreign API, a config file, a plugin manifest. The test
+to apply is: _could this table be a `const`?_ If yes, it should be.
+
 `ZqCtx::class_prototype` takes the id `register_class` returned:
 
 ```rust
@@ -664,21 +686,34 @@ let class_id = JsElement::register_id(ctx)?;      // `register` throws the id aw
 let proto = ctx.class_prototype(class_id)?;
 ```
 
-Two ways to add members whose names are not written out in Rust:
+The two table forms:
 
 ```rust
 // a `&'static [ZqMemberDef]` const, spliced in at compile time
 #[zq_class(name = "Element", prototype_members = STYLE_MEMBERS)]
 pub struct JsElement;
 
-// or installed at runtime, for names computed then
-ctx.class_install_prototype_methods(class_id, &["flex", "w"], style_op::trampoline())?;
+// or installed at runtime, for names only known once the host runs
+ctx.class_install_prototype_members(class_id, &[
+    ZqMember::method("flex", style_op::trampoline(), 0),
+    ZqMember::method("w", style_op::trampoline(), 1),
+])?;
 ```
 
-The convenience form assigns `cc.magic()` as the index, so the dispatcher reads
-the same order the names came from and there is no second numbering to keep in
-step. The slice form takes explicit `magic` and covers accessors and constants
-too.
+Whatever the form, `magic` is yours to assign and `cc.magic()` hands it back, so
+the dispatcher reads the same order the names came from and there is no second
+numbering to keep in step. Keep the names and the dispatch in one table:
+
+```rust
+pub const STYLES: &[StyleDef] = &[def(c"flex", Style::Fixed(StyleOp::Flex)), /*…*/];
+
+// one line, magic == index, arity from the variant
+pub const STYLE_MEMBERS: [ZqMemberDef; STYLES.len()] =
+    to_members(STYLES, style_op::trampoline());
+```
+
+`to_members` is a ten-line `const fn` over that table. Writing the `ZqMemberDef`
+table out by hand instead puts each name in two places and every magic in a third.
 
 Anything whose names you can write down belongs in `#[zq_method]` instead, where
 the compiler checks the signature and there is one copy of the name.
@@ -704,19 +739,19 @@ TypeError: member 'declared' is declared twice on class id 42
 
 A name may appear once across everything a class declares:
 
-| collision | refused by |
-|---|---|
-| twice in one table | the host, at install |
-| a table name vs `#[zq_method]` | the host, at class init |
-| a table name vs `#[zq_static_method]` | the host, at class init |
-| a `#[zq_method]` vs `#[zq_static_method]` | **the macro, at compile time** |
-| a name the prototype already owns | the host, at install |
-| a reserved name — `constructor` on the prototype, `length`/`name`/`prototype` on the constructor | the host, at class init |
+| collision                                                                                        | refused by                     |
+| ------------------------------------------------------------------------------------------------ | ------------------------------ |
+| twice in one table                                                                               | the host, at install           |
+| a table name vs `#[zq_method]`                                                                   | the host, at class init        |
+| a table name vs `#[zq_static_method]`                                                            | the host, at class init        |
+| a `#[zq_method]` vs `#[zq_static_method]`                                                        | **the macro, at compile time** |
+| a name the prototype already owns                                                                | the host, at install           |
+| a reserved name — `constructor` on the prototype, `length`/`name`/`prototype` on the constructor | the host, at class init        |
 
 **Why refuse when the engine could replace.** The engine's ordinary redefine
 path (`define_property`, via `check_define_prop_flags`) does replace a
 configurable property, and zapi members are installed configurable — so an
-overwrite is *possible*. It is refused on purpose: a name appearing twice in
+overwrite is _possible_. It is refused on purpose: a name appearing twice in
 your own class is almost always a mistake, and silently keeping the last one
 hides it. Note also that `install_fields` appends lazy slots rather than merging
 them, so a duplicate is not even a merge at that layer; making it work would mean
@@ -941,26 +976,27 @@ confirm it does something:
 
 ## 9. Pitfalls
 
-| pitfall                                          | consequence                            | rule                                                       |
-| ------------------------------------------------ | -------------------------------------- | ---------------------------------------------------------- |
-| `payload_no_gc` on a payload holding a JS value  | process dies                           | unsure? leave it off - chapter 8                           |
-| forgetting one `mark` among several              | crash on that callback only            | mark every handle                                          |
-| `string_read_utf8` error swallowed               | pending exception trips a later assert | propagate, or use `coerce_string` / `try_string_read_utf8` |
-| `let _ =` on a fallible call                     | error silently lost                    | propagate with `?`; only `mark` in `trace`                 |
-| storing a `ZqCtx`                                | dangling context                       | take it per tick                                           |
-| sending a JS value to a worker thread            | engine data race                       | convert on the JS thread                                   |
-| bare `mpsc::Sender` instead of `ZqWakeSender`    | lost wakeup, loop parks forever        | every send and drop must wake                              |
-| unbounded queue, no backpressure                 | silent memory growth                   | bound it and count drops                                   |
-| `null` treated as omitted                        | wrong contract, silent default         | only `undefined` is omitted                                |
-| implicit coercion or truncation                  | wrong values, no error                 | strict checks; `TypeError` vs `RangeError`                 |
-| a holding job for an event stream                | program never exits                    | `spawn_event_job`                                          |
-| listener registered twice                        | every event delivered twice            | replace and abort the old task                             |
-| callback argument not validated                  | events silently dropped                | check `is_callable()` at registration                      |
-| `ZqRuntimeState::with` re-entering the same slot | panic, by design                       | do not call the same slot inside `f`                       |
-| finalize hook calling a JS API                   | crash at teardown                      | drop state, do not trace it                                |
-| resolving a bundled resource against the cwd     | works in dev, missing in the install   | resolve against `module_path()`'s directory                |
-| stale build after a scripted edit                | you test the wrong binary              | `touch` + delete artifact                                  |
-| release build                                    | memory bugs become silent corruption   | debug everywhere                                           |
+| pitfall                                                               | consequence                                                | rule                                                                   |
+| --------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `payload_no_gc` on a payload holding a JS value                       | process dies                                               | unsure? leave it off - chapter 8                                       |
+| forgetting one `mark` among several                                   | crash on that callback only                                | mark every handle                                                      |
+| `string_read_utf8` error swallowed                                    | pending exception trips a later assert                     | propagate, or use `coerce_string` / `try_string_read_utf8`             |
+| `let _ =` on a fallible call                                          | error silently lost                                        | propagate with `?`; only `mark` in `trace`                             |
+| storing a `ZqCtx`                                                     | dangling context                                           | take it per tick                                                       |
+| sending a JS value to a worker thread                                 | engine data race                                           | convert on the JS thread                                               |
+| bare `mpsc::Sender` instead of `ZqWakeSender`                         | lost wakeup, loop parks forever                            | every send and drop must wake                                          |
+| unbounded queue, no backpressure                                      | silent memory growth                                       | bound it and count drops                                               |
+| `null` treated as omitted                                             | wrong contract, silent default                             | only `undefined` is omitted                                            |
+| installing a member at runtime when the name is known at compile time | half-installed class, name in two places, magic in a third | declare it: `#[zq_method]`, else `#[zq_class(prototype_members = ..)]` |
+| implicit coercion or truncation                                       | wrong values, no error                                     | strict checks; `TypeError` vs `RangeError`                             |
+| a holding job for an event stream                                     | program never exits                                        | `spawn_event_job`                                                      |
+| listener registered twice                                             | every event delivered twice                                | replace and abort the old task                                         |
+| callback argument not validated                                       | events silently dropped                                    | check `is_callable()` at registration                                  |
+| `ZqRuntimeState::with` re-entering the same slot                      | panic, by design                                           | do not call the same slot inside `f`                                   |
+| finalize hook calling a JS API                                        | crash at teardown                                          | drop state, do not trace it                                            |
+| resolving a bundled resource against the cwd                          | works in dev, missing in the install                       | resolve against `module_path()`'s directory                            |
+| stale build after a scripted edit                                     | you test the wrong binary                                  | `touch` + delete artifact                                              |
+| release build                                                         | memory bugs become silent corruption                       | debug everywhere                                                       |
 
 ## 10. API map
 
@@ -1092,11 +1128,6 @@ taking a UTF-8 `&str` (no intermediate JS string).
 | proc macros                                                                                                                                                                                                                                                                            | `#[zq_module]`, `#[zq_function]`, `#[zq_export]`, `#[zq_class]`, `#[zq_class_impl]`, `#[zq_method]`, `#[zq_static_method]`, `#[derive(ZqGcTrace)]` |
 | generated per class                                                                                                                                                                                                                                                                    | `Cls::{class_def, register, register_id, new_instance, payload, payload_mut, take_payload}`, plus `item`, `items`                                  |
 | generated per function                                                                                                                                                                                                                                                                 | `f::{trampoline, call, item, items}`                                                                                                               |
-| a prototype whose members come from a table                    | `#[zq_class(prototype_members = ..)]`, or `class_install_prototype_members` / `class_install_prototype_methods` |
-| **the names JS can see**, for `zapi-dts` or a `.d.ts` reconciliation step   | `Cls::MEMBERS` / `f::MEMBERS` -> `&'static [ZqMemberMeta]`       |
+| a prototype whose members come from a table                                                                                                                                                                                                                                            | `#[zq_class(prototype_members = ..)]` (compile time), or `class_install_prototype_members` (runtime)                                               |
 | a class value back as a handle                                                                                                                                                                                                                                                         | `Class::from_def` (unsafe)                                                                                                                         |
 | the loaded dylib's resolved path (not the name JS imported it by), `None` if the host gave none. Its parent is where to resolve bundled resources; the same string is the injected `__file__`. Call once in `module_init` and cache it; copy resources beside the dylib in production. | `module_path`                                                                                                                                      |
-
-`MEMBERS` lists only what the macros declared. Members an extension installs at
-runtime through `class_prototype` are invisible to it, so a generator has to
-take those names from the table it installed them from.

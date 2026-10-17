@@ -205,15 +205,16 @@ impl<'cx> ZqCtx<'cx> {
 
     /// Install members on the prototype of a registered class.
     ///
-    /// For a surface whose names are not written out in Rust — a data table, a
-    /// reflection table. Members written in Rust belong in `#[zq_method]`.
+    /// **This is the fallback.** A member whose name is known at compile time
+    /// belongs in `#[zq_method]`, or in a `#[zq_class(prototype_members = ..)]`
+    /// const table. Use this only for names that do not exist until the host
+    /// runs — a reflection table over a foreign API, a config file.
     ///
-    /// **Names collide by overwriting.** A later member replaces an earlier
-    /// one, and replaces a `#[zq_method]` of the same name. Nothing here
-    /// rejects a collision; picking the right names is the caller's job.
-    ///
-    /// **Not atomic.** If member *k* fails, members `0..k` stay installed and
-    /// this call reports the error.
+    /// **Every name must be new.** The host throws a `TypeError` naming the
+    /// member rather than replacing it, so a mistake is loud. That is also why
+    /// the declaration forms come first: they are installed while the class is
+    /// still being set up, so a collision refuses the whole class instead of
+    /// leaving the members listed before the offending one on the prototype.
     pub fn class_install_prototype_members(
         &self,
         class_id: i32,
@@ -246,25 +247,6 @@ impl<'cx> ZqCtx<'cx> {
             (api.class_install_prototype_members)(self.raw, class_id, defs.as_ptr(), defs.len())
         };
         if r < 0 { Err(ZqError) } else { Ok(()) }
-    }
-
-    /// Install methods on a class prototype, all sharing one body.
-    ///
-    /// `cc.magic()` in `body` is the index of the name in `names`, so the
-    /// dispatcher reads the same table the names came from and there is no
-    /// second numbering to keep in step.
-    pub fn class_install_prototype_methods(
-        &self,
-        class_id: i32,
-        names: &[&str],
-        body: crate::ffi::ZqBodyFn,
-    ) -> Result<(), ZqError> {
-        let members: Vec<ZqMember<'_>> = names
-            .iter()
-            .enumerate()
-            .map(|(index, name)| ZqMember::method(name, body, index as i32))
-            .collect();
-        self.class_install_prototype_members(class_id, &members)
     }
 
     #[allow(clippy::not_unsafe_ptr_arg_deref)]

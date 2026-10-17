@@ -79,9 +79,10 @@ impl ZqFieldDef {
 /// Concatenate two field slices into one fixed-size array.
 ///
 /// `N` must be `declared.len() + extra.len()`; entries keep their order, so
-/// `extra` is installed after `declared` and overwrites it where names collide.
-/// The proc macro emits one `ZqFieldDef` array per class and reaches for this
-/// when `#[zq_class(prototype_members = ..)]` appends a table.
+/// `extra` lands after `declared`. The proc macro emits one `ZqFieldDef` array
+/// per class and reaches for this when `#[zq_class(prototype_members = ..)]`
+/// appends a table. Concatenation is what lets the host check the declared and
+/// table names against each other — it refuses the class if any two collide.
 pub const fn merge_fields<const N: usize>(
     declared: &[ZqFieldDef],
     extra: &[ZqFieldDef],
@@ -1326,10 +1327,12 @@ pub struct ZqApi {
 
     /// Installs members on the prototype of a registered class.
     ///
-    /// Later entries replace earlier ones, and replace any member already on
-    /// the prototype — this is `install_fields` semantics, not a merge that
-    /// rejects collisions. Not atomic: entries before a failing one stay
-    /// installed and the call reports the error.
+    /// Every name must be new: a name already on the prototype, or repeated
+    /// within `members`, throws a `TypeError` naming it. Nothing is replaced.
+    /// Not atomic — entries before a failing one stay installed — which is why
+    /// this is the fallback and `#[zq_class(prototype_members = ..)]` is not:
+    /// a declared table is installed while the class is set up, so it can
+    /// refuse the whole class.
     pub class_install_prototype_members: unsafe extern "C" fn(
         env: ZqRawCtx,
         class_id: i32,

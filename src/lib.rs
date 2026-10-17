@@ -12,7 +12,6 @@ pub mod iter;
 #[cfg(feature = "serde_json_support")]
 pub mod json;
 pub mod member;
-pub mod metadata;
 pub mod value;
 
 // Internal module for proc-macro generated code.
@@ -30,7 +29,6 @@ pub use {
     gc::{ZqGcTrace, ZqGcTraceCtx},
     iter::{AsyncIterResult, ZqAsyncIterable},
     member::{ZqMember, ZqMemberValue},
-    metadata::{ZqMemberKind, ZqMemberMeta},
     value::{ZqBufKind, ZqPropertyDescriptor, ZqTypedArrayElem, ZqValue, ZqValueType},
 };
 

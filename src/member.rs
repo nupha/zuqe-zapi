@@ -3,24 +3,26 @@
 
 //! Members added to a class prototype at runtime.
 //!
-//! A class whose member names live in Rust is better off declaring them with
-//! `#[zq_method]` — the compiler checks the signature and there is one copy of
-//! the name. This is for the other case: a surface whose names come from
-//! somewhere else, a reflection table or a data table.
+//! **This is the fallback, not the way to write it.** A member whose name is
+//! known when the extension compiles belongs in `#[zq_method]`, or in a
+//! `#[zq_class(prototype_members = ..)]` const table when the names come from
+//! data. Reach for this module only when the names genuinely do not exist until
+//! the host runs — a reflection table over a foreign API, a config file.
 //!
-//! Names collide by overwriting, exactly as `install_fields` means: a later
-//! member replaces an earlier one, and replaces a `#[zq_method]` of the same
-//! name. Nothing here rejects a collision — choosing the right names is the
-//! extension author's job.
+//! Why the declaration forms come first: they are installed while the class is
+//! being set up, so a name that collides with something already there refuses
+//! the *whole class*. Installing at runtime can only refuse the call, which
+//! means members listed before the offending one are already on the prototype.
 //!
-//! The install is not atomic. Entries before a failing one stay installed, and
-//! the call reports the error.
+//! **Every name must be new.** The host compares the table against what the
+//! class already has and throws a `TypeError` naming the member; it never
+//! overwrites. Picking the right names stays the caller's job, but a mistake is
+//! an error rather than a silent replacement.
 
 use crate::ffi::{
     ZQ_MEMBER_BOOL, ZQ_MEMBER_FLOAT, ZQ_MEMBER_GETSET, ZQ_MEMBER_INT, ZQ_MEMBER_METHOD,
     ZQ_MEMBER_STR, ZQ_MEMBER_UNDEFINED, ZqBodyFn, ZqMemberDef,
 };
-use crate::metadata::ZqMemberKind;
 
 /// Default property flags for an installed member: writable and configurable.
 ///
@@ -42,12 +44,9 @@ pub enum ZqMemberValue<'a> {
 /// One member to install on a class prototype.
 #[derive(Clone, Copy)]
 pub struct ZqMember<'a> {
-    /// The property name. May collide with anything already installed; the
-    /// last install wins.
+    /// The property name. Must be new on the class it is installed on: the
+    /// host throws a `TypeError` naming it rather than replacing anything.
     pub name: &'a str,
-    /// `Method`, `Getter`, `Setter` or `GetSet`. Ignored when `value` is not
-    /// [`ZqMemberValue::None`].
-    pub kind: ZqMemberKind,
     /// Function arity for a method. Advisory; JS does not enforce it.
     pub arity: u8,
     /// Dispatch value, yielded by `cc.magic()` in the body.
@@ -67,12 +66,19 @@ pub struct ZqMember<'a> {
 impl<'a> ZqMember<'a> {
     /// A method. `magic` is what the body reads back as `cc.magic()`.
     ///
-    /// [`ZqCtx::class_install_prototype_methods`](crate::ZqCtx::class_install_prototype_methods)
-    /// assigns the index for you when every name shares one body.
+    /// When every name shares one body, numbering by hand is the one place two
+    /// things can drift. Write the table yourself so `magic` is the index:
+    ///
+    /// ```ignore
+    /// let members: Vec<ZqMember> = names
+    ///     .iter()
+    ///     .enumerate()
+    ///     .map(|(i, n)| ZqMember::method(n, body, i as i32))
+    ///     .collect();
+    /// ```
     pub fn method(name: &'a str, body: ZqBodyFn, magic: i32) -> Self {
         Self {
             name,
-            kind: ZqMemberKind::Method,
             arity: 0,
             magic,
             flags: DEFAULT_FLAGS,
@@ -86,14 +92,8 @@ impl<'a> ZqMember<'a> {
     /// An accessor. Either half may be absent; both absent installs nothing
     /// useful, so pass at least one.
     pub fn accessor(name: &'a str, get: Option<ZqBodyFn>, set: Option<ZqBodyFn>) -> Self {
-        let kind = match (get.is_some(), set.is_some()) {
-            (true, false) => ZqMemberKind::Getter,
-            (false, true) => ZqMemberKind::Setter,
-            _ => ZqMemberKind::GetSet,
-        };
         Self {
             name,
-            kind,
             arity: 0,
             magic: 0,
             flags: DEFAULT_FLAGS,
@@ -128,7 +128,6 @@ impl<'a> ZqMember<'a> {
     pub fn constant(name: &'a str, value: ZqMemberValue<'a>) -> Self {
         Self {
             name,
-            kind: ZqMemberKind::Value,
             arity: 0,
             magic: 0,
             flags: DEFAULT_FLAGS,
@@ -358,20 +357,26 @@ mod tests {
         assert_ne!(m.flags & crate::ffi::ZQ_PROP_CONFIGURABLE, 0);
     }
 
+    /// The wire kind is derived from what the member carries, not stored
+    /// separately: one accessor kind covers get-only, set-only and both, and
+    /// the host tells the halves apart by which pointer is non-null.
     #[test]
-    fn a_one_sided_accessor_reports_which_half_it_is() {
-        assert_eq!(
-            ZqMember::accessor("x", Some(noop), None).kind,
-            ZqMemberKind::Getter
+    fn the_wire_kind_follows_what_the_member_carries() {
+        let one_sided = to_def(
+            &ZqMember::accessor("x", Some(noop), None),
+            c"x".as_ptr(),
+            std::ptr::null(),
         );
-        assert_eq!(
-            ZqMember::accessor("x", None, Some(noop)).kind,
-            ZqMemberKind::Setter
+        assert_eq!(one_sided.kind, ZQ_MEMBER_GETSET);
+        assert!(one_sided.get.is_some() && one_sided.set.is_none());
+
+        let with_method = to_def(
+            &ZqMember::method("y", noop, 3),
+            c"y".as_ptr(),
+            std::ptr::null(),
         );
-        assert_eq!(
-            ZqMember::accessor("x", Some(noop), Some(noop)).kind,
-            ZqMemberKind::GetSet
-        );
+        assert_eq!(with_method.kind, ZQ_MEMBER_METHOD);
+        assert!(with_method.body.is_some());
     }
 
     #[test]
