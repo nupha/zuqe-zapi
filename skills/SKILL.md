@@ -28,8 +28,8 @@ name = "myext"                 # -> myext.dll / libmyext.so / libmyext.dylib
 crate-type = ["cdylib"]        # required
 
 [dependencies]
-zuqe_zapi = "0.3.0"            # must match the host's version
-zuqe_zapi_macros = "0.3.0"
+zuqe_zapi = "0.4.0"            # must match the host's version
+zuqe_zapi_macros = "0.4.0"
 ```
 
 ### Layout
@@ -404,7 +404,12 @@ Database.isOpen(t); // inherited static
 - **Declaration order does not matter.** The child may be declared, exported or
   registered before its parent; the host links them once both are known.
 - **`Base` must itself be a `#[zq_class]`** from the same extension. A parent
-  from another dylib cannot be named and is silently not linked.
+  from another dylib cannot be named: the child is registered as a class
+  **without** a parent, and nothing warns you — no member of the class you meant
+  is inherited.
+- **A class with no `extends` is an ordinary root class.** Its prototype inherits
+  `Object.prototype`, so a `Root` instance still reaches `hasOwnProperty`,
+  `toString` and the rest of `Object.prototype`.
 - **This is member-lookup inheritance, not `super`.** A `#[zq_method]` body is
   Rust and has no `super` syntax: a child that needs the parent's behaviour
   calls it by name — `JsDatabase::close(ctx, cc)` — rather than `super.close()`.
