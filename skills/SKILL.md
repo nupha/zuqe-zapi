@@ -145,10 +145,10 @@ extensions hand-write `impl ZqGcTrace for ...` and never use the derive.
 
 | Macro                                                   | Use for                               | Shape                                                                                                     |
 | ------------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `#[zq_module(name, exports = [...], finalize = f)]`     | one per module                        | `fn module_init()` or `fn module_init(ctx) -> Result<(), ZqError>`                                        |
+| `#[zq_module(name, exports = [...], finalize = f)]`     | one per module                        | `fn module_init()` or `fn module_init(ctx: &ZqCtx) -> Result<(), ZqError>`                                |
 | `#[zq_function(name = "js", magic = N)]`                | a free function                       | `fn f<'a>(ctx: ZqCtx<'a>, cc: ZqCallInfo<'a>) -> Result<ZqValue<'a>, ZqError>`                            |
 | `#[zq_export(name = "js")]`                             | a value computed at module load       | `fn f<'a>(ctx: ZqCtx<'a>) -> Result<ZqValue<'a>, ZqError>`                                                |
-| `#[zq_class(name = "Cls", payload = T, payload_no_gc)]` | a JS class                            | on `struct Cls;`                                                                                          |
+| `#[zq_class(name = "Cls", payload = T, …)]`             | a JS class; only `name` is required. `payload` omitted = a stateless class (chapter 4.1); optional extras: `payload_no_gc` (chapter 8), `extends` (4.1), `prototype_members` (4.7) | on `struct Cls;`                          |
 | `#[zq_class_impl]`                                      | the class body                        | on the inherent `impl Cls`; holds `fn constructor`, `#[zq_method]`, `#[zq_static_method]`                 |
 | `#[zq_method(name = "js", get, set, magic = N)]`        | an instance method (on the prototype) | inside `#[zq_class_impl]`: `fn f<'a>(ctx: ZqCtx<'a>, cc: ZqCallInfo<'a>) -> Result<ZqValue<'a>, ZqError>` |
 | `#[zq_static_method(name = "js", get, set, magic = N)]` | a static method (on the constructor)  | same shape as `#[zq_method]`                                                                              |
@@ -161,6 +161,10 @@ Rules:
   override with `name = "js_name"`.
 - The `#[zq_module]` function is always the init hook, whatever it is called.
 - Anything not listed in `exports` does not exist in JS.
+- `exports` is normally an inline list; it can also name a `const`/`static`
+  `[ZqFieldDef; _]` slice (`exports = MY_EXPORTS`) when the list lives in
+  another file or is composed with `#[cfg]` - spell each entry as
+  `myfn::item()` / `MyClass::item()` in that form.
 - `#[zq_module(finalize = ...)]` runs once per runtime at teardown and must not
   call any JS API.
 
@@ -190,8 +194,9 @@ the module, with a real `ZqCtx`, which is why setup that depends on the runtime
 belongs there rather than in a `static` initializer - and why anything a single
 runtime needs must not be shared across runtimes (chapter 3).
 
-It takes `ctx` only if it needs it; a module with nothing to set up uses an empty
-`fn module_init() {}`.
+Two signature forms: `fn module_init(ctx: &ZqCtx) -> Result<(), ZqError>` for
+real init logic — the hook passes `ctx` **by reference**, not by value — or an
+empty `fn module_init() {}` for a module with nothing to set up.
 
 Common cases:
 
@@ -383,6 +388,16 @@ is why the helper is worth having once per class.
 Any method may return a Promise - a method is not "sync" or "async", it just
 returns whatever the body returns (see 4.3).
 
+- **A class can be stateless.** `#[zq_class(name = "Marker")]` with no `payload`
+  generates a one-argument `Marker::new_instance(ctx)`; the constructor builds
+  one directly. Nothing is traced or freed per instance.
+- **To release the payload early, `take_payload`.** On an explicit `close()`,
+  `JsDatabase::take_payload(ctx, cc.this())` hands you the boxed `DbPayload` and
+  detaches it: the instance keeps no payload afterwards (its finalizer and GC
+  trace see null), so dropping the `Box` frees the worker now instead of at GC.
+  After a `take_payload`, later methods see `payload(...) == None` - a
+  "already closed" `TypeError` comes free.
+
 #### Inheritance
 
 `extends = Base` names another `#[zq_class]` as the parent. The host chains both
@@ -475,7 +490,7 @@ under the one you do. Name it once at module init:
 
 ```rust
 #[zq_module(name = "myext", exports = [...])]
-fn module_init(ctx: ZqCtx) -> Result<(), ZqError> {
+fn module_init(ctx: &ZqCtx) -> Result<(), ZqError> {
     ctx.set_default_executor(|fut| tokio::spawn(fut));
     Ok(())
 }
@@ -500,10 +515,17 @@ ctx.promise_fut_on(work, |fut| tokio::spawn(fut), convert)
 | `promise_threaded`    | Promise                      | a fresh OS thread                            |
 | `promise_fut`         | Promise                      | the executor registered at init              |
 | `promise_fut_on`      | Promise                      | an executor passed per call                  |
-| `promise_fut_result*` | Promise                      | as above; rejects with the error's `Display` |
+| `promise_fut_result*` | Promise                      | as above; rejects with the error's `Display` (`_result` pins the error to `String`; `_result_on` takes any `Display`) |
 | `spawn_event_job`     | nothing; you keep the sender | event-loop job, does **not** hold the loop   |
 | `spawn_channel_job`   | nothing; you keep the sender | event-loop job, **holds** the loop           |
 | `new_async_iterator`  | AsyncIterable                | polled by the consumer                       |
+
+For a shape the helpers do not cover - a promise settled from several places, or
+one you hand back through a class method - `new_promise_capability` returns a
+pending promise plus its `resolve` / `reject` functions; settle it by calling
+them on the JS thread. All three are real JS values: store their raw handles in
+a payload or in state and they need a mark like any other held JS value
+(chapter 8).
 
 ### 4.4 Long-lived worker thread per instance
 
@@ -550,6 +572,11 @@ every send and every drop wakes the event loop, so a producer cannot forget to
 wake and strand the job waiting for its message. It clones and is `Send` for any
 message type, so give one clone to each producer.
 
+The underlying `ZqWakeHandle` is deliberately **not** `Clone`: one token, one
+owner - a copied token would free the same host waker twice. Share the wake
+capability by cloning the `ZqWakeSender`, or by `ZqWakeHandle::share()` ->
+`Arc<ZqWakeHandle>` when your data path is not a zapi channel.
+
 **Bound the queue.** `try_send` never blocks, so a slow consumer grows the queue
 without limit. Drop the incoming item and count it once the queue lag (age of the
 oldest item) passes a threshold.
@@ -567,7 +594,8 @@ let tx = ctx.spawn_event_job("mylog", move |ctx, msg| {
 ```
 
 `spawn_event_job` registers the draining job and hands you a sender; every
-`send` wakes the loop and delivers one message to your handler.
+`send` wakes the loop, and the next tick then delivers **everything the channel
+holds** to your handler.
 
 |                      | `spawn_event_job`                | `spawn_channel_job`            |
 | -------------------- | -------------------------------- | ------------------------------ |
@@ -810,9 +838,13 @@ Every parameter needs an explicit, strict check.
 // wrong: coerces, defaults, silently truncates
 let timeout = cc.arg(0).to_f64(ctx).unwrap_or(30.0) as i32;
 
-// right
+// right: `arg_f64` is a ToNumber coercion, so reject a non-number first
 let timeout = if cc.arg(0).is_undefined() { 30 } else {
-    let f = cc.arg_f64(ctx, 0)?;
+    let v = cc.arg(0);
+    if v.kind() != ZqValueType::Number {
+        return Err(ctx.throw_type("`timeout` must be a number"));
+    }
+    let f = v.to_f64(ctx)?;          // may be NaN/Infinity - checked below
     if !f.is_finite() || f.fract() != 0.0 || f <= 0.0 {
         return Err(ctx.throw_range("`timeout` must be a positive integer"));
     }
@@ -822,7 +854,10 @@ let timeout = if cc.arg(0).is_undefined() { 30 } else {
 
 Readers: `cc.arg(n)`, `arg_f64`, `arg_i32`, `arg_bool`, `arg_string`,
 `arg_enum(ctx, n, &["a", "b"], "mode")`, `cc.is_empty()`, `cc.len()`, `cc.this()`,
-`cc.args()`.
+`cc.args()`. Note what they really are: `arg_f64`/`arg_i32`/`arg_bool` are
+coercions (`ToNumber` / `ToInt32` / `ToBoolean`), not type checks; `arg_string`
+is a strict read (a non-string leaves a pending `TypeError`, chapter 5's trap
+below); `arg_enum` is strict and produces a `RangeError`.
 
 Options objects: reject a non-object with a `TypeError`, then read each key and
 treat only `undefined` as absent.
@@ -857,6 +892,7 @@ let n = value.ok_or_else(|| ctx.throw_range("out of range"))?;
 | `ctx.throw_uri(msg)`       | `URIError`       |
 | `ctx.throw_eval(msg)`      | `EvalError`      |
 | `ctx.throw_internal(msg)`  | `InternalError`  |
+| `ctx.throw_aggregate(msg)` | `AggregateError` |
 | `ctx.throw(kind, msg)`     | any of the above |
 
 - `Err(ZqError)` from a body means "a JS exception is already pending".
@@ -1010,6 +1046,7 @@ confirm it does something:
 | finalize hook calling a JS API                                        | crash at teardown                                          | drop state, do not trace it                                            |
 | resolving a bundled resource against the cwd                          | works in dev, missing in the install                       | resolve against `module_path()`'s directory                            |
 | stale build after a scripted edit                                     | you test the wrong binary                                  | `touch` + delete artifact                                              |
+| `arg_f64` treated as a type check                                     | `"5"` silently becomes `5`                                 | coercions are not checks - test `kind()` first (chapter 5)             |
 | release build                                                         | memory bugs become silent corruption                       | debug everywhere                                                       |
 
 ## 10. API map
@@ -1037,7 +1074,8 @@ in this table, it is not a `pub` method of `zuqe_zapi`.
 | receiver and arity                           | `this`, `len`, `is_empty`                      |
 | iterate the arguments                        | `args`                                         |
 | the raw argument (past the end: `undefined`) | `arg(n)`                                       |
-| checked readers -> `TypeError`               | `arg_f64`, `arg_i32`, `arg_bool`, `arg_string` |
+| coercions, not type checks                   | `arg_f64`, `arg_i32`, `arg_bool`               |
+| a strict read; a non-string leaves a pending `TypeError` | `arg_string`                       |
 | a string enum -> `RangeError`                | `arg_enum(ctx, n, &["a", "b"], "name")`        |
 | which stacked JS name was called             | `magic`                                        |
 
@@ -1063,6 +1101,7 @@ in this table, it is not a `pub` method of `zuqe_zapi`.
 | error value, native function  | `new_error`, `new_function(ctx, f::trampoline(), "name", magic)`              |
 | bytes                         | `typed_array::<T>`, `new_buf`, `new_array_buffer`, `ZqBufKind`                |
 | read bytes back / what is it  | `buf_bytes`, `get_buf_type`                                                   |
+| JSON (`serde_json_support`)   | `from_json(cx, &v)`, `to_json(cx) -> Option`                                  |
 
 ### 10.5 `ZqValue` - strings
 
@@ -1119,7 +1158,7 @@ taking a UTF-8 `&str` (no intermediate JS string).
 | `Result` instead of a value             | `promise_fut_result`, `promise_fut_result_on`                                                 |
 | name the executor once                  | `set_default_executor` (`ZqExecutor`)                                                         |
 | a promise you settle by hand            | `new_promise_capability` -> `ZqPromiseCapability { promise, resolve, reject }`                |
-| a persistent polling job                | `add_job` (`ZqJob`), `add_job_no_gc` -> `ZqPoll::{Done, Again, AgainNoHold}`                  |
+| a persistent polling job                | `add_job` (`ZqJob`), `add_job_no_gc` -> `ZqPoll::{Done, Again, AgainNoHold}`; `Again` holds the loop (pair the job with a wake), `AgainNoHold` does not |
 | native -> JS messages                   | `make_wake_channel` -> `ZqWakeSender::send`; `ZqWakeHandle::{wake, share}`                    |
 | drained messages, holds the loop        | `spawn_channel_job` -> `ZqChannelPoll::{Continue, Done}`                                      |
 | an event stream, does not hold the loop | `spawn_event_job`                                                                             |
@@ -1141,7 +1180,8 @@ taking a UTF-8 `&str` (no intermediate JS string).
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | proc macros                                                                                                                                                                                                                                                                            | `#[zq_module]`, `#[zq_function]`, `#[zq_export]`, `#[zq_class]`, `#[zq_class_impl]`, `#[zq_method]`, `#[zq_static_method]`, `#[derive(ZqGcTrace)]` |
 | generated per class                                                                                                                                                                                                                                                                    | `Cls::{class_def, register, register_id, new_instance, payload, payload_mut, take_payload}`, plus `item`, `items`                                  |
-| generated per function                                                                                                                                                                                                                                                                 | `f::{trampoline, call, item, items}`                                                                                                               |
+| generated per `#[zq_function]`                                                                                                                                                                                                                                                         | `f::{trampoline, call, item, items}`                                                                                                               |
+| generated per `#[zq_export]`                                                                                                                                                                                                                                                           | `f::{item, items}` (no trampoline/call - a value is built once, not called)                                                                        |
 | a prototype whose members come from a table                                                                                                                                                                                                                                            | `#[zq_class(prototype_members = ..)]` (compile time), or `class_install_prototype_members` (runtime)                                               |
 | a class value back as a handle                                                                                                                                                                                                                                                         | `Class::from_def` (unsafe)                                                                                                                         |
 | the loaded dylib's resolved path (not the name JS imported it by), `None` if the host gave none. Its parent is where to resolve bundled resources; the same string is the injected `__file__`. Call once in `module_init` and cache it; copy resources beside the dylib in production. | `module_path`                                                                                                                                      |
