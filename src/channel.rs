@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 John Ray <996351336@qq.com>
 
-//! Wake-aware channel sender for the standard zapi async pattern:
+//! Wake-aware channel senders for the standard zapi async pattern:
 //! JS creates the channel → an OS worker thread produces results → a
 //! `queue_job` polling job drains the receiver. The sender wakes the parked
 //! event loop on every send and on drop (all senders gone → the polling job
 //! can settle on `Disconnected`), so producers cannot forget to wake.
 //!
-//! Backed by `std::sync::mpsc` (unbounded) — no extra dependency.
+//! Two flavors, both backed by `std::sync::mpsc` — no extra dependency:
+//! [`ZqWakeSender`] (unbounded) and [`ZqWakeSyncSender`] (bounded, for
+//! backpressure against a slow consumer).
 //!
 //! This type is also **the** carrier for a shared wake capability: cloning it
 //! is correct and cheap (one `Sender` clone + one `Arc` bump), so
@@ -109,6 +111,112 @@ impl<T> ZqWakeSender<T> {
 }
 
 impl<T> Drop for ZqWakeSender<T> {
+    fn drop(&mut self) {
+        // Sender gone: a `Disconnected` can only be discovered by the next
+        // poll — wake the parked loop so it happens now.
+        self.waker.wake();
+    }
+}
+
+/// Bounded-channel sender that wakes the JS event loop automatically.
+///
+/// Same wake contract as [`ZqWakeSender`] — every successful send and every
+/// drop wakes the loop — but over a **bounded** `mpsc::SyncSender`, so a slow
+/// consumer applies backpressure instead of growing the queue without limit.
+///
+/// * [`send`](Self::send) blocks while the channel is full;
+/// * [`try_send`](Self::try_send) never blocks: `Full` means "retry later".
+///   Prefer it on threads that hold a lock the consumer may need — a blocking
+///   send under such a lock deadlocks against the consumer waiting for it.
+/// * [`Clone`] is *shared*, like [`ZqWakeSender`]: one sender clone per
+///   producer, all clones wake the same loop.
+///
+/// Create one by wrapping your own `mpsc::sync_channel` sender with
+/// [`ZqWakeSyncSender::new`] / [`ZqWakeSyncSender::from_shared`].
+pub struct ZqWakeSyncSender<T> {
+    tx: mpsc::SyncSender<T>,
+    /// Shared, never owned: sharing lives here and only here. The
+    /// [`ZqWakeHandle`] itself stays an exclusive token (1 mint = 1 release).
+    waker: Arc<ZqWakeHandle>,
+}
+
+impl<T> Clone for ZqWakeSyncSender<T> {
+    /// Hand-written on purpose, same as [`ZqWakeSender`]: a derived `Clone`
+    /// would add a `T: Clone` bound the payload never asked for.
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            waker: Arc::clone(&self.waker),
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for ZqWakeSyncSender<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZqWakeSyncSender")
+            .field("shares", &Arc::strong_count(&self.waker))
+            .finish()
+    }
+}
+
+impl<T> ZqWakeSyncSender<T> {
+    /// Pair an existing bounded sender with a wake token, taking ownership
+    /// of it. The token is shared from here on, so cloning the returned
+    /// sender is free.
+    pub fn new(tx: mpsc::SyncSender<T>, waker: ZqWakeHandle) -> Self {
+        Self {
+            tx,
+            waker: waker.share(),
+        }
+    }
+
+    /// Join an existing sharing group: reuse the same `Arc<ZqWakeHandle>` as
+    /// other senders/wrappers for the same loop.
+    pub fn from_shared(tx: mpsc::SyncSender<T>, waker: Arc<ZqWakeHandle>) -> Self {
+        Self { tx, waker }
+    }
+
+    /// The underlying raw sender, for paths that must not wake (e.g. a POSIX
+    /// signal handler, which must use async-signal-safe wakeups instead).
+    /// A silent send can park the loop forever — wake it explicitly after.
+    pub fn tx(&self) -> &mpsc::SyncSender<T> {
+        &self.tx
+    }
+
+    /// The shared wake handle, for waking without sending (e.g. the consumer
+    /// polls state you own, so there is no message to carry).
+    pub fn waker(&self) -> &Arc<ZqWakeHandle> {
+        &self.waker
+    }
+
+    /// Wake the parked loop without sending anything.
+    pub fn wake(&self) {
+        self.waker.wake();
+    }
+
+    /// Send and wake the parked event loop. Blocks while the channel is
+    /// full; never call it while holding a lock the consumer may need.
+    /// It fails only if the receiver is gone.
+    pub fn send(&self, value: T) -> Result<(), mpsc::SendError<T>> {
+        let r = self.tx.send(value);
+        if r.is_ok() {
+            self.waker.wake();
+        }
+        r
+    }
+
+    /// Non-blocking send that wakes the loop on success. `Full` means the
+    /// consumer is behind — retry on the next tick instead of waiting.
+    pub fn try_send(&self, value: T) -> Result<(), mpsc::TrySendError<T>> {
+        let r = self.tx.try_send(value);
+        if r.is_ok() {
+            self.waker.wake();
+        }
+        r
+    }
+}
+
+impl<T> Drop for ZqWakeSyncSender<T> {
     fn drop(&mut self) {
         // Sender gone: a `Disconnected` can only be discovered by the next
         // poll — wake the parked loop so it happens now.
@@ -277,13 +385,14 @@ pub enum ZqChannelPoll {
 
 /// Compile-time assertions on the sharing model.
 ///
-/// * `ZqWakeSender<T>: Clone` must hold for **every** `T`, including a message
-///   type that is neither `Clone` nor `Send`: cloning the sender is about the
-///   wake capability, never about the payload. (A `#[derive(Clone)]` on the
-///   struct would silently add `T: Clone` and break exactly this — which is
-///   why the `Clone` impl above is hand-written.)
-/// * It must also be `Send`, so one sender clone can be moved to each producer
-///   thread.
+/// * `ZqWakeSender<T>: Clone` / `ZqWakeSyncSender<T>: Clone` must hold for
+///   **every** `T`, including a message type that is neither `Clone` nor
+///   `Send`: cloning the sender is about the wake capability, never about the
+///   payload. (A `#[derive(Clone)]` on either struct would silently add
+///   `T: Clone` and break exactly this — which is why the `Clone` impls above
+///   are hand-written.)
+/// * Both must also be `Send`, so one sender clone can be moved to each
+///   producer thread.
 const _: fn() = || {
     /// Deliberately implements nothing.
     struct Plain;
@@ -293,4 +402,6 @@ const _: fn() = || {
 
     assert_clone::<ZqWakeSender<Plain>>();
     assert_send::<ZqWakeSender<Plain>>();
+    assert_clone::<ZqWakeSyncSender<Plain>>();
+    assert_send::<ZqWakeSyncSender<Plain>>();
 };

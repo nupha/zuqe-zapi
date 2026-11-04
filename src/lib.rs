@@ -21,7 +21,7 @@ pub mod __private;
 pub use {
     __private::module_path,
     call_info::ZqCallInfo,
-    channel::{ZqChannelPoll, ZqWakeSender},
+    channel::{ZqChannelPoll, ZqWakeSender, ZqWakeSyncSender},
     class::Class,
     ctx::{ZqCtx, ZqExecutor, ZqJob, ZqPoll, ZqPromiseCapability, ZqRuntimeState, ZqWakeHandle},
     error::{ZqError, ZqErrorType},
